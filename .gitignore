@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# バンドルの中に作る 3D のキャッシュ
+.web/
