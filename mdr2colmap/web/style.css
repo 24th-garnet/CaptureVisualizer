@@ -76,27 +76,52 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
            justify-content: center; margin: 0; color: var(--faint);
            font-family: var(--mono); font-size: 12px; pointer-events: none; }
 
-/* 平面表示記号（建築工事設計図書作成基準 別表1）。単位はメートル。
-   **順守するのは記号だけ。** 寸法線・室名・面積・尺度といった図面の作法は
-   この画面の目的（撮影結果の確認と家具の配置）には要らないので持たない。
-   線の太さは記号を読み分けるための区別で、基準の線幅そのものではない。 */
-.wall { fill: none; stroke: var(--ink); stroke-width: 0.025; }   /* 壁は平行 2 本線 */
-.win { fill: none; stroke: var(--ink); stroke-width: 0.013; }    /* 窓一般 */
-.jamb { stroke: var(--ink); stroke-width: 0.025; }               /* 出入口の方立 */
-.door-bar { stroke: var(--ink); stroke-width: 0.013; }           /* 出入口一般の中央線 */
-.ghost { fill: none; stroke: var(--rule); stroke-width: 0.013;
-         stroke-dasharray: .09 .07; }
-.obj rect { fill: none; stroke: var(--soft); stroke-width: 0.013; cursor: grab;
-            /* **塗りが無いと内側が当たり判定を持たない。** 3.3(4) に従って
-               塗りつぶしをやめたら、線の上でしか掴めなくなった。 */
-            pointer-events: all; }
+/* インテリア製図通則（日本インテリア学会 2016）に従う。単位はメートル。
+   この通則を選んだのは「既存躯体の実測をもとに図面が作成される場合は、
+   寸法の記載は内法寸法を基本にする」（解説 7）と定めているから。我々が
+   測れるのは内法で、建築製図の主流である壁芯ではない。
+
+   表2 線の種類及び用途:
+     太線 実線 — 断面に現れる物体の見える外形線（＝壁の仕上線）
+     中線 実線 — 家具等の外形線
+     細線 実線 — 稜線・寸法線・寸法補助線・引出線・ハッチング（断面の切り口）
+   太さの比は 4:2:1。JIS の極太線は「太すぎる」として通則が採用していない
+   （解説 5）。尺度は 1/50 が標準なので、紙の 0.5 / 0.25 / 0.125mm を
+   実寸へ直すと 25 / 12.5 / 6.25mm になる。 */
+:root {
+  --w-thick: 0.025;    /* 太線 0.5mm @ 1/50 */
+  --w-mid:   0.0125;   /* 中線 0.25mm */
+  --w-thin:  0.00625;  /* 細線 0.125mm */
+}
+/* 壁は断面。切り口をハッチング（細線）で示し、仕上線を太線で締める。 */
+.wall { fill: url(#hatch); stroke: var(--ink); stroke-width: var(--w-thick); }
+.win  { fill: none; stroke: var(--ink); stroke-width: var(--w-thin); }
+.jamb { stroke: var(--ink); stroke-width: var(--w-thick); }
+.door-bar { stroke: var(--ink); stroke-width: var(--w-thin); }
+.hatchline { stroke: var(--rule); stroke-width: var(--w-thin); }
+
+/* 家具は中線の外形線。造作家具と区別するため壁面から離して置く（解説 9）。 */
+.obj rect { fill: none; stroke: var(--soft); stroke-width: var(--w-mid);
+            cursor: grab; pointer-events: all; }
 .obj.moved rect { stroke: var(--moved); }
-.obj.sel rect { stroke: var(--pick); stroke-width: 0.03; }
-.obj text { font-family: var(--jp); font-size: .13px; fill: var(--faint);
+.obj.sel rect { stroke: var(--pick); stroke-width: 0.02; }
+.ghost { fill: none; stroke: var(--rule); stroke-width: var(--w-thin);
+         stroke-dasharray: .06 .05; }
+
+/* 文字はゴシック。高さは通則 6.2 の標準値から選ぶ（1/50 で実寸へ）。 */
+.obj text { font-family: var(--jp); font-size: .125px; fill: var(--faint);
             text-anchor: middle; dominant-baseline: middle;
             pointer-events: none; user-select: none; }
-.scalebar { fill: none; stroke: var(--soft); stroke-width: 0.013; }
-.scaletext { font-family: var(--mono); font-size: .16px; fill: var(--faint); }
+/* 寸法は通則 6.2 の 1.8mm 相当。名称より一段小さくして重なりを避ける。 */
+.obj text.size { font-family: var(--mono); font-size: .09px; }
+.roomname { font-family: var(--jp); font-size: .25px; fill: var(--ink);
+            text-anchor: middle; dominant-baseline: middle; }
+/* 寸法線・寸法補助線は細線。数値はミリメートル、単位記号は付けない（7.2）。 */
+.dimline { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.dimtext { font-family: var(--mono); font-size: .125px; fill: var(--soft);
+           text-anchor: middle; }
+.scalebar { fill: none; stroke: var(--soft); stroke-width: var(--w-thin); }
+.scaletext { font-family: var(--mono); font-size: .125px; fill: var(--faint); }
 
 .bar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
        padding: 12px 0 4px; }

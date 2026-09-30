@@ -20,6 +20,8 @@ const el = (tag, attrs, parent) => {
 };
 const fmt = (v, d = 0) => (v === null || v === undefined ? '—' : v.toFixed(d));
 const api = (p, opts) => fetch(p, opts).then(r => r.json());
+/** メートルをミリメートルの整数に。通則 7.2 により単位記号は付けない。 */
+const mmv = m => Math.round(m * 1000).toLocaleString('en-US');
 
 // --- 一覧 -------------------------------------------------------------------
 
@@ -125,6 +127,13 @@ function drawPlan() {
     return el('line', { x1, y1, x2, y2, class: cls }, parent);
   };
 
+  // 断面の切り口を示すハッチング（表2 細線）。壁の塗りに使う。
+  const defs = el('defs', {});
+  const pat = el('pattern', { id: 'hatch', patternUnits: 'userSpaceOnUse',
+                              width: 0.06, height: 0.06,
+                              patternTransform: 'rotate(45)' }, defs);
+  el('path', { d: 'M 0 0 V 0.06', class: 'hatchline' }, pat);
+
   const T = 0.12;                           // 壁厚は作図上の仮定
   for (const w of plan.walls) {
     const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
@@ -138,22 +147,21 @@ function drawPlan() {
     let cur = 0;
     for (const [s, e, cat] of spans.concat([[L, L, null]])) {
       if (s > cur) {
-        // 壁は平行 2 本線（別表2 の材料構造表示記号は材料が分からないので使わない）
+        // 壁は断面。切り口をハッチングで示し、仕上線を太線で描く（表2 太線）。
         const p = at(cur), q = at(s);
-        line(off(p, T / 2), off(q, T / 2), 'wall');
-        line(off(p, -T / 2), off(q, -T / 2), 'wall');
-        if (cur === 0) line(off(p, T / 2), off(p, -T / 2), 'wall');
-        if (s >= L) line(off(q, T / 2), off(q, -T / 2), 'wall');
+        poly([off(p, T / 2), off(q, T / 2), off(q, -T / 2), off(p, -T / 2)], 'wall');
       }
       if (cat === null) break;
       const p = at(s), q = at(e);
       if (cat === 'window') {
-        // 別表1「窓一般」。壁厚の中を平行線で通す。
-        for (const k of [0.5, -0.5]) line(off(p, T * k), off(q, T * k), 'wall');
+        // 窓一般。壁厚の中を細線で通す。切り口は無いのでハッチングしない。
+        for (const k of [0.5, -0.5]) line(off(p, T * k), off(q, T * k), 'jamb');
         for (const k of [0.15, -0.15]) line(off(p, T * k), off(q, T * k), 'win');
       } else {
-        // 別表1「出入口一般」。**建具の種別が出ないので開き勝手は描かない。**
-        // RoomPlan は扉の寸法しか返さず、吊元も開く向きも引違いの別も持たない。
+        // 出入口。**開き勝手が出ないので扉を開いて描かない。**
+        // 通則は出入口のドアを 90 度開いて示すと定めるが（解説 9）、吊元は
+        // RoomPlan が返さず、メッシュ上でも閉じた扉は板厚が開口全体に均一に
+        // 出るだけで手がかりが無い（実測で確認）。描けば嘘になる。
         line(off(p, T / 2), off(p, -T / 2), 'jamb');
         line(off(q, T / 2), off(q, -T / 2), 'jamb');
         const mid = at((s + e) / 2);
@@ -172,13 +180,62 @@ function drawPlan() {
                  transform: `translate(${gx} ${gy}) rotate(${o.yaw - 90})` }, ghosts);
     const g = el('g', { class: 'obj', 'data-id': o.id }, objs);
     el('rect', { x: -o.w / 2, y: -o.d / 2, width: o.w, height: o.d }, g);
-    el('text', { x: 0, y: 0 }, g).textContent = o.label;
+    // **家具は形状だけでなく名称と寸法を併記する**（解説 9）。寸法は W×D×H。
+    // 家具が回っても文字は水平に保つので、ラベルは別の g に入れて逆回転させる。
+    const lab = el('g', { class: 'lab' }, g);
+    el('text', { x: 0, y: -0.06 }, lab).textContent = o.label;
+    el('text', { x: 0, y: 0.09, class: 'size' }, lab).textContent =
+      `${mmv(o.w)}×${mmv(o.d)}×${mmv(o.h)}`;
     objNodes.set(o.id, g);
   }
+  // 室名。平面図は床上おおむね 1m の水平断面図で、室名を入れるのが通例。
+  if (plan.floor && plan.floor.length > 2) {
+    const cx = plan.floor.reduce((a, p) => a + p[0], 0) / plan.floor.length;
+    const cz = plan.floor.reduce((a, p) => a + p[1], 0) / plan.floor.length;
+    const [tx, ty] = toScreen([cx, cz]);
+    el('text', { x: tx, y: ty, class: 'roomname' }).textContent = plan.roomName || '';
+  }
+
+  // 寸法。**空間は内法寸法、開口部は有効寸法**（通則 7.2 / 解説 7）。
+  // 単位はミリメートルで、単位記号は付けない。
+  const dim = (a, b, push, label) => {
+    const [x1, y1] = toScreen(a), [x2, y2] = toScreen(b);
+    const horiz = Math.abs(y1 - y2) < 1e-6;
+    const ox = horiz ? 0 : push, oy = horiz ? push : 0;
+    // 寸法補助線（細線）で図形から引き出し、寸法線を添える。
+    el('path', { class: 'dimline',
+      d: `M ${x1} ${y1} L ${x1 + ox} ${y1 + oy} M ${x2} ${y2} L ${x2 + ox} ${y2 + oy}`
+         + ` M ${x1 + ox} ${y1 + oy} L ${x2 + ox} ${y2 + oy}` });
+    const tx = (x1 + x2) / 2 + ox, ty = (y1 + y2) / 2 + oy;
+    el('text', { class: 'dimtext', x: tx, y: ty - 0.05,
+                 transform: horiz ? '' : `rotate(-90 ${tx} ${ty})` }).textContent = label;
+  };
+  // **押し出しは必ず図の外側へ。** 画面は (x,z)→(z, LX−x) に写しているので、
+  // 平面図の辺がどちら向きの線になるかを取り違えると室内へ寸法線が入る。
+  dim([0, 0], [LX, 0], -0.45, mmv(LX));     // 画面では左側の縦線
+  dim([LX, 0], [LX, LZ], -0.45, mmv(LZ));   // 画面では上側の横線
+
+  // 開口部の有効寸法。壁の外側へ少し出して添える。
+  for (const w of plan.walls) {
+    const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
+    const L = Math.hypot(dx, dz) || 1;
+    const u = [dx / L, dz / L], n = [-u[1], u[0]];
+    for (const o of (w.openings || [])) {
+      const push = (p, s) => [p[0] + n[0] * s, p[1] + n[1] * s];
+      const a = push([w.a[0] + u[0] * o.s, w.a[1] + u[1] * o.s], -T * 1.4);
+      const b = push([w.a[0] + u[0] * o.e, w.a[1] + u[1] * o.e], -T * 1.4);
+      const [x1, y1] = toScreen(a), [x2, y2] = toScreen(b);
+      el('path', { class: 'dimline', d: `M ${x1} ${y1} L ${x2} ${y2}` });
+      el('text', { class: 'dimtext', x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 0.04 })
+        .textContent = mmv(o.e - o.s);
+    }
+  }
+
   const y = LX + M * 0.45;
   el('path', { class: 'scalebar',
     d: `M 0 ${y} H 1 M 0 ${y - .06} V ${y + .06} M 1 ${y - .06} V ${y + .06}` });
-  el('text', { x: 1.12, y: y + .06, class: 'scaletext' }).textContent = '1 m';
+  el('text', { x: 1.12, y: y + .06, class: 'scaletext' })
+    .textContent = '1 m   S=1/50';
   svg.querySelectorAll('.obj').forEach(g => {
     g.addEventListener('pointerdown', onDown);
     g.addEventListener('pointermove', onMove);
@@ -195,7 +252,10 @@ let cullBack = true;
 let boxes = new Map();       // RoomPlan の境界箱（線分）
 const cssColor = name =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-let cam = { r: 15, theta: -0.9, phi: 1.02 }, target = new THREE.Vector3();
+let cam = { r: 15, theta: -0.9, phi: 1.02 };
+// **three.js が無くても平面図は出す。** ここで new すると、CDN を読めない
+// ときにモジュール直下で例外になり app.js ごと死ぬ。初期化まで遅らせる。
+let target = null;
 let needs = true;
 
 function initGL() {
@@ -208,6 +268,7 @@ function initGL() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(50, 1, 0.05, 300);
+  target = new THREE.Vector3();
   hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a94, 1.0);
   dirLight = new THREE.DirectionalLight(0xffffff, 0.45);
   dirLight.position.set(3, 8, 2);
@@ -298,7 +359,7 @@ function resizeGL() {
 }
 const draw = () => { needs = true; };
 function loop() {
-  if (needs && renderer) {
+  if (needs && renderer && target) {
     needs = false;
     cam.phi = Math.max(0.12, Math.min(Math.PI / 2 - 0.02, cam.phi));
     cam.r = Math.max(1.5, Math.min(90, cam.r));
@@ -354,7 +415,10 @@ function place() {
     const [sx, sy] = toScreen([o.c[0] + m.dx, o.c[1] + m.dz]);
     const g = objNodes.get(o.id);
     if (g) {
-      g.setAttribute('transform', `translate(${sx} ${sy}) rotate(${o.yaw - 90 - m.dyaw})`);
+      const rot = o.yaw - 90 - m.dyaw;
+      g.setAttribute('transform', `translate(${sx} ${sy}) rotate(${rot})`);
+      const lab = g.querySelector('.lab');
+      if (lab) lab.setAttribute('transform', `rotate(${-rot})`);
       g.classList.toggle('moved', !!(m.dx || m.dz || m.dyaw));
       g.classList.toggle('sel', sel === o.id);
     }
