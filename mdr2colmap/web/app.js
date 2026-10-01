@@ -926,8 +926,10 @@ function walkBlocked(x, z, dx, dz) {
 }
 
 function walkStep(dt) {
-  const f = [Math.sin(walkYaw), Math.cos(walkYaw)];     // 前（x, z）
-  const r = [f[1], -f[0]];                              // 右
+  // **カメラは局所の −Z を向く。** ヨー θ を掛けた前は (−sinθ, −cosθ)。
+  // ここを (sinθ, cosθ) にすると前後が入れ替わる。
+  const f = [-Math.sin(walkYaw), -Math.cos(walkYaw)];   // 前（x, z）
+  const r = [-f[1], f[0]];                              // 右
   let wx = 0, wz = 0;
   if (walkKeys.has('f')) { wx += f[0]; wz += f[1]; }
   if (walkKeys.has('b')) { wx -= f[0]; wz -= f[1]; }
@@ -945,9 +947,10 @@ function walkStep(dt) {
   walkCam.rotation.set(walkPitch, walkYaw, 0, 'YXZ');
   if (walkMark) {
     const [sx, sy] = toScreen([walkPos.x, walkPos.z]);
-    // 画面は (x,z)→(z, LX−x) に写しているので、向きも同じ写し方で回す。
+    // 画面は (x,z)→(z, LX−x) に写す。矢印は上向き（画面 −y）に描いてあり、
+    // それは平面図の +x にあたる。前は (−sinθ, −cosθ) なので 90 度ずれる。
     walkMark.setAttribute('transform',
-      `translate(${sx} ${sy}) rotate(${-walkYaw * 180 / Math.PI})`);
+      `translate(${sx} ${sy}) rotate(${-walkYaw * 180 / Math.PI - 90})`);
   }
 }
 

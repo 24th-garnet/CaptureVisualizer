@@ -531,18 +531,45 @@ ok('体の半径ぶん手前で止まる', (function () {
   return walkBlocked(1, 1, 0.1, 0) === true;
 })());
 
+// **向き。** three.js のカメラは局所の −Z を向くので、ヨー 0 の前は −Z。
+// ここを取り違えると前後が入れ替わる（実際に入れ替わっていた）。
+rayHits = function () { return []; };
+walkPos = { x: 1, y: 0, z: 1 };
+walkYaw = 0; walkPitch = 0;
+walkKeys.clear(); walkKeys.add('f');
+walkStep(0.1);
+ok('W は前（−Z）へ進む', walkPos.z < 1 - 1e-4, 'z=' + walkPos.z);
+ok('W で横には流れない', near(walkPos.x, 1, 1e-9), 'x=' + walkPos.x);
+walkPos = { x: 1, y: 0, z: 1 };
+walkKeys.clear(); walkKeys.add('b');
+walkStep(0.1);
+ok('S は後ろ（+Z）へ進む', walkPos.z > 1 + 1e-4, 'z=' + walkPos.z);
+walkPos = { x: 1, y: 0, z: 1 };
+walkKeys.clear(); walkKeys.add('r');
+walkStep(0.1);
+ok('D は右（+X）へ進む', walkPos.x > 1 + 1e-4, 'x=' + walkPos.x);
+walkPos = { x: 1, y: 0, z: 1 };
+walkKeys.clear(); walkKeys.add('l');
+walkStep(0.1);
+ok('A は左（−X）へ進む', walkPos.x < 1 - 1e-4, 'x=' + walkPos.x);
+walkPos = { x: 1, y: 0, z: 1 };
+walkYaw = Math.PI / 2;                       // 右を向く＝前は −X
+walkKeys.clear(); walkKeys.add('f');
+walkStep(0.1);
+ok('右を向いて W は −X へ', walkPos.x < 1 - 1e-4 && near(walkPos.z, 1, 1e-9),
+   walkPos.x.toFixed(3) + ' / ' + walkPos.z.toFixed(3));
+
 // **軸ごとに試す。** まとめて止めると壁に沿って滑れない。
 walkPos = { x: 1, y: 0, z: 1 };
-walkYaw = Math.PI / 4;                       // 斜め前（x も z も正）
+walkYaw = Math.PI / 4;                       // 前は (−0.707, −0.707)
 walkKeys.clear(); walkKeys.add('f');
 rayHits = function (o, d) {
-  // x 方向にだけ壁がある
-  return Math.abs(d.x) > 1e-6 ? [{ distance: 0.01 }] : [];
+  return Math.abs(d.x) > 1e-6 ? [{ distance: 0.01 }] : [];   // x 方向にだけ壁
 };
 var before = { x: walkPos.x, z: walkPos.z };
 walkStep(0.1);
 ok('塞がれた軸は進まない', near(walkPos.x, before.x, 1e-9), 'x=' + walkPos.x);
-ok('空いている軸は進む', walkPos.z > before.z + 1e-4, 'z=' + walkPos.z);
+ok('空いている軸は進む', walkPos.z < before.z - 1e-4, 'z=' + walkPos.z);
 ok('目の高さは床から WALK_EYE', near(walkCam.position.y, WALK_EYE, 1e-9));
 
 // 向きの反映
