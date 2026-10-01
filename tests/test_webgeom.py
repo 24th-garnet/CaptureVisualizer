@@ -248,3 +248,70 @@ def test_small_parts_are_counted_by_position_not_by_uv_split():
     F = np.array([[0, 1, 2], [4, 5, 3]])          # 頂点番号は別だが位置は連続
     _, _, f, _ = webgeom.drop_small(V, C, F, min_area=0.05)
     assert len(f) == 2, "位置で繋がっているのに切られている"
+
+
+def _jpeg(arr, quality=98):
+    from io import BytesIO
+
+    from PIL import Image
+    b = BytesIO()
+    Image.fromarray(arr.astype(np.uint8)).save(b, format="JPEG", quality=quality)
+    return b.getvalue()
+
+
+def _decode(data):
+    from io import BytesIO
+
+    from PIL import Image
+    return np.asarray(Image.open(BytesIO(data)).convert("RGB")).astype(int)
+
+
+def test_atlas_holes_are_filled_from_the_neighbours():
+    """撮れていない黒い領域を、まわりの色で埋める。"""
+    a = np.full((128, 128, 3), 180, np.uint8)
+    a[40:90, 40:90] = 0                       # 50×50 の穴
+    out = _decode(webgeom.fill_atlas(_jpeg(a)))
+    hole = out[55:75, 55:75]
+    assert hole.min() > 100, hole.min()       # 黒が残っていない
+    assert abs(hole.mean() - 180) < 25, hole.mean()
+
+
+def test_a_hole_larger_than_any_kernel_is_still_filled():
+    """バイキュービックでは届かない大きさでも埋まる（ピラミッドで畳むため）。"""
+    a = np.full((256, 256, 3), 200, np.uint8)
+    a[28:228, 28:228] = 0                     # 200×200
+    out = _decode(webgeom.fill_atlas(_jpeg(a)))
+    assert out[128, 128].max() > 100, out[128, 128]
+
+
+def test_known_texels_are_left_alone():
+    """既知の texel は変えない。
+
+    **JPEG の入れ直しぶんと比べる。** 素の差で測ると圧縮の劣化を算入して
+    しまい、何を見ているのか分からなくなる。
+    """
+    y, x = np.mgrid[0:128, 0:128]
+    a = np.stack([y * 2 % 256, x * 2 % 256, (x + y) % 256], axis=2).astype(np.uint8)
+    a = np.clip(a, 20, 240)
+    a[50:70, 50:70] = 0
+    src = _jpeg(a)
+    keep = _decode(src).max(axis=2) > webgeom.ATLAS_EMPTY
+    # 埋めずに同じ品質で入れ直しただけのもの
+    plain = _decode(_jpeg(_decode(src), quality=webgeom.ATLAS_QUALITY))
+    out = _decode(webgeom.fill_atlas(src))
+    assert np.abs(out[keep] - plain[keep]).mean() < 0.5, \
+        np.abs(out[keep] - plain[keep]).mean()
+
+
+def test_an_atlas_without_holes_is_returned_untouched():
+    a = np.full((64, 64, 3), 120, np.uint8)
+    data = _jpeg(a)
+    assert webgeom.fill_atlas(data) is data
+
+
+def test_fill_reaches_every_corner():
+    """1×1 まで畳むので、どこにも真っ黒は残らない。2×2 で止めると残った。"""
+    a = np.zeros((64, 64, 3), np.uint8)
+    a[0:4, 0:4] = 200                          # 隅にだけ色がある
+    out = _decode(webgeom.fill_atlas(_jpeg(a)))
+    assert (out.max(axis=2) == 0).sum() == 0, (out.max(axis=2) == 0).sum()

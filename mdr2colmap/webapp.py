@@ -347,10 +347,18 @@ class Handler(BaseHTTPRequestHandler):
         **base64 で geom に混ぜない。** 3.5MB が 4.7MB に膨らむうえ、画像として
         別に取れば browser のキャッシュに乗る。
         """
-        got = webgeom.atlas_bytes(bundle / "mesh.glb")
-        if got is None:
-            return self._json({"error": "テクスチャが無い"}, 404)
-        body, mime = got
+        cache = bundle / ".web" / "atlas.jpg"
+        src = bundle / "mesh.glb"
+        if cache.exists() and src.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
+            body, mime = cache.read_bytes(), "image/jpeg"
+        else:
+            got = webgeom.atlas_bytes(src)
+            if got is None:
+                return self._json({"error": "テクスチャが無い"}, 404)
+            # 撮れていない黒い領域をまわりの色で埋める（2 秒ほど）。
+            body, mime = webgeom.fill_atlas(got[0]), "image/jpeg"
+            cache.parent.mkdir(exist_ok=True)
+            cache.write_bytes(body)
         self.send_response(200)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
