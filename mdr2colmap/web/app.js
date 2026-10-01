@@ -458,12 +458,21 @@ function drawPlan() {
   });
   placeSvg();
   updateOverlay();
+  deformRoom();
 }
 
 // --- 3D ---------------------------------------------------------------------
 
 let overlay = null;          // 編集後の壁を立体にしたもの（図面の側）
 let showOverlay = true;
+/* スキャンした壁を編集に追従させるための控え。
+   家具の移動と同じ考えで、**面を壁へ振り分けて剛体で動かす**。違うのは
+   家具が部屋から外れた物なのに対し、壁は床と天井に繋がっていること。継ぎ目で
+   裂けないよう、頂点ごとの重み（サーバで計算）で床と天井の縁だけを伸ばす。 */
+let roomGeo = null, roomBase = null, roomWIdx = null, roomWWt = null;
+let origWalls = [];          // スキャン当時の壁。ここからの差分で動かす
+let followWalls = true;
+let deformed = false;
 let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
 let materials = [];          // 裏面の扱いを一括で切り替えるため
 let cullBack = true;
@@ -540,6 +549,9 @@ async function loadGeom(id) {
     document.getElementById('gl-note').textContent = g.error;
     return;
   }
+  origWalls = (g.walls || []).map(w => Object.assign(frameOf(w.a, w.b), { id: w.id }));
+  roomGeo = roomBase = roomWIdx = roomWWt = null;
+  deformed = false;
   for (const part of g.parts) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(dec(part.pos, Float32Array), 3));
@@ -553,6 +565,12 @@ async function loadGeom(id) {
     const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
       vertexColors: true, side: cullBack ? THREE.FrontSide : THREE.DoubleSide }));
     materials.push(mesh.material);
+    if (part.kind !== 'object' && part.widx) {
+      roomGeo = geo;
+      roomBase = geo.attributes.position.array.slice();   // 元の形を控える
+      roomWIdx = dec(part.widx, Uint8Array);
+      roomWWt = dec(part.wwt, Uint8Array);
+    }
     if (part.kind === 'object') {
       mesh.position.set(part.c[0], 0, part.c[2]);
       mesh.userData.id = part.id;
@@ -566,6 +584,7 @@ async function loadGeom(id) {
   cam.r = Math.max(6, Math.hypot(g.extent[0], g.extent[1]) * 0.9);
   document.getElementById('gl-note').hidden = true;
   updateOverlay();                            // initGL の後でないと作れない
+  deformRoom();
   resizeGL(); place(); draw();
 }
 
@@ -674,6 +693,63 @@ function updateOverlay() {
   overlay.add(faces, edges);
   overlay.visible = showOverlay;
   scene.add(overlay);
+}
+
+/** 線分 (a, b) の局所座標系。沿う向き u・法線 n・長さ L。 */
+function frameOf(a, b) {
+  const dx = b[0] - a[0], dz = b[1] - a[1];
+  const L = Math.hypot(dx, dz) || 1;
+  const u = [dx / L, dz / L];
+  return { a, u, n: [-u[1], u[0]], L };
+}
+
+/** スキャンした壁を編集後の位置へ移す。
+
+    頂点を「その壁の局所座標（沿う距離 s・法線方向 d）」で持ち直し、編集後の
+    枠で組み直す。**s をそのまま保つので、開口は壁の a 端からの距離を保った
+    まま動く**——平面図の規則と 3D が自動的に一致する。
+
+    重みは枠を 2 つ持ち、足し合わせる。角の頂点は 2 枚の壁に 1 ずつ従うので、
+    直交する 2 枚が動けばその和が角の動きそのものになる。 */
+function deformRoom() {
+  if (!roomGeo || !roomBase || !plan) return;
+  const now = origWalls.map(o => {
+    const w = plan.walls.find(v => v.id === o.id);
+    return w ? frameOf(w.a, w.b) : null;
+  });
+  const moving = followWalls && now.some((t, k) => t && (
+    Math.abs(t.a[0] - origWalls[k].a[0]) > 1e-6 ||
+    Math.abs(t.a[1] - origWalls[k].a[1]) > 1e-6 ||
+    Math.abs(t.u[0] - origWalls[k].u[0]) > 1e-6 ||
+    Math.abs(t.u[1] - origWalls[k].u[1]) > 1e-6));
+  if (!moving && !deformed) return;           // 動かす必要が無い
+  const pos = roomGeo.attributes.position.array;
+  const nv = pos.length / 3;
+  for (let i = 0; i < nv; i++) {
+    const x = roomBase[i * 3], y = roomBase[i * 3 + 1], z = roomBase[i * 3 + 2];
+    let ax = 0, az = 0;
+    if (moving) {
+      for (let sl = 0; sl < 2; sl++) {
+        const k = roomWIdx[i * 2 + sl];
+        if (k === 255) continue;
+        const wt = roomWWt[i * 2 + sl] / 255;
+        const o = origWalls[k], t = now[k];
+        if (!wt || !t) continue;
+        const qx = x - o.a[0], qz = z - o.a[1];
+        // 沿う距離は縮んだ壁の中へ収める。**越えさせると角から飛び出す**
+        // （実測で 3.575m の壁が 3.288m に縮んだとき 287mm はみ出した）。
+        // 開口を壁に収めるのと同じ扱い。
+        const s = Math.min(Math.max(qx * o.u[0] + qz * o.u[1], 0), t.L);
+        const d = qx * o.n[0] + qz * o.n[1];
+        ax += wt * (t.a[0] + t.u[0] * s + t.n[0] * d - x);
+        az += wt * (t.a[1] + t.u[1] * s + t.n[1] * d - z);
+      }
+    }
+    pos[i * 3] = x + ax; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z + az;
+  }
+  roomGeo.attributes.position.needsUpdate = true;
+  roomGeo.computeVertexNormals();
+  deformed = moving;
 }
 
 function addBox(part) {
@@ -951,6 +1027,10 @@ document.getElementById('overlay').onchange = e => {
   showOverlay = e.target.checked;
   if (overlay) overlay.visible = showOverlay;
   draw();
+};
+document.getElementById('follow').onchange = e => {
+  followWalls = e.target.checked;
+  deformRoom(); draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };

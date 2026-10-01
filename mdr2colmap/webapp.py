@@ -218,9 +218,13 @@ def geom_payload(bundle: Path) -> dict:
     cache = bundle / ".web" / "geom.json"
     src = bundle / "mesh_vc.glb"
     if cache.exists() and src.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
-        return json.loads(cache.read_text())
+        got = json.loads(cache.read_text())
+        # 形が変わったら作り直す。元データの更新時刻では気付けない。
+        if got.get("ver") == webgeom.PAYLOAD_VER:
+            return got
     with _build_lock:
         g = webgeom.build(bundle)
+        g["ver"] = webgeom.PAYLOAD_VER
         cache.parent.mkdir(exist_ok=True)
         cache.write_text(json.dumps(g))
     return g
