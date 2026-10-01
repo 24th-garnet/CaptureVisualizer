@@ -601,13 +601,15 @@ THREE = {
   LineSegments: function (g, m) { this.geometry = g; this.material = m; },
   LineBasicMaterial: function (o) { this.o = o; },
   Color: function (r, gg, b) { this.r = r; this.g = gg; this.b = b; },
-  FrontSide: 0, DoubleSide: 2
+  DataTexture: function (d, w, h) { this.d = d; this.w = w; this.h = h;
+                                    this.dispose = function () {}; },
+  FrontSide: 0, DoubleSide: 2, LinearFilter: 1, ClampToEdgeWrapping: 1, RGBFormat: 1
 };
 renderer = {}; scene = { add: function () {}, remove: function () {} };
 origWalls = plan.walls.map(function (w) {
   var f = frameOf(w.a, w.b); f.id = w.id; f.inSide = 1; return f;
 });
-fillColors = { floor: [161, 128, 97], ceiling: [171, 163, 149], wall: [182, 175, 156] };
+fillMaps = {}; fillTex = new Map(); shellHeight = 2.408; geomExtent = [3.1347, 3.5754];
 showShell = true; cullBack = true; shell = null;
 buildShell();
 ok('床・天井・壁ぶんの面ができる', made.length === 2 + plan.walls.length,
@@ -629,7 +631,15 @@ ok('天井は下を向く', normal(tri(cei,0))[1] < 0 && normal(tri(cei,1))[1] <
 // スキャンの床は実測で +0.0155m。塞ぐ面はその下でなければ手前に出てしまう。
 ok('床はスキャンより下', tri(flo,0)[0][1] < 0, 'y=' + tri(flo,0)[0][1]);
 ok('天井はスキャンより上', tri(cei,0)[0][1] > 2.408, 'y=' + tri(cei,0)[0][1]);
-ok('床の色は測った中央値', flo.m.o.color.r === 161/255);
+// 色の格子が無いときは一色で逃がす
+ok('格子が無ければ一色', flo.m.o.map === null && flo.m.o.color.r === 0.6);
+// UV は面の向きを直したときも一緒に並べ替わる
+ok('床に UV が付く', flo.g.attrs.uv && flo.g.attrs.uv.array.length === 12);
+ok('床の UV は枠いっぱい', (function () {
+  var u = flo.g.attrs.uv.array, mx = 0;
+  for (var i = 0; i < u.length; i++) mx = Math.max(mx, u[i]);
+  return mx > 1.0;                               // 余白ぶん 1 を超える
+})());
 
 // 壁は室内を向き、スキャンした面より外になければならない
 var okdir = true, okout = true;
@@ -644,11 +654,31 @@ for (var i = 0; i < plan.walls.length; i++) {
 }
 ok('壁は室内を向く', okdir);
 ok('壁はスキャンした面より外にある', okout);
+ok('壁の UV は端から端へ', (function () {
+  var u = made[2].g.attrs.uv.array, us = [], vs = [];
+  for (var i = 0; i < u.length; i += 2) { us.push(u[i]); vs.push(u[i+1]); }
+  return near(Math.min.apply(null, us), 0) && near(Math.max.apply(null, us), 1)
+      && near(Math.min.apply(null, vs), 0) && Math.max.apply(null, vs) > 0.99;
+})(), made[2].g.attrs.uv.array.join(','));
+ok('UV は頂点と同じ数', made[2].g.attrs.uv.array.length / 2
+   === made[2].g.attrs.position.array.length / 3);
 ok('壁は床から天井まで', (function () {
   var t0 = tri(made[2], 0), t1 = tri(made[2], 1);
   var ys = t0.concat(t1).map(function (p) { return p[1]; });
   return near(Math.min.apply(null, ys), 0) && Math.max.apply(null, ys) > 2.3;
 })());
+
+// 色の格子があれば貼る
+made = [];
+fillMaps = { floor: { w: 4, h: 4, data: 'AAAA' },
+             w0: { w: 3, h: 2, data: 'AAAA' } };
+fillTex = new Map();
+buildShell();
+ok('格子があれば質感を貼る', made[0].m.o.map !== null && made[0].m.o.map.w === 4);
+ok('格子があるぶんだけ白で乗せる', made[0].m.o.color.r === 1);
+ok('格子の無い面は一色のまま', made[1].m.o.map === null);
+ok('質感は使い回す', fillTex.get('floor') === made[0].m.o.map);
+fillMaps = {}; fillTex = new Map();
 
 // 切ると作らない
 made = []; showShell = false; buildShell();

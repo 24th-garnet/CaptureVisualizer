@@ -495,7 +495,10 @@ let overlay = null;          // 編集後の壁を立体にしたもの（図面
 let showOverlay = true;
 let shell = null;            // 撮れていない隙間を塞ぐ面
 let showShell = true;
-let fillColors = {};         // 床・天井・壁の代表色（サーバで測った中央値）
+let fillMaps = {};           // 床・天井・壁の色（場所ごと。サーバで作る）
+let fillTex = new Map();     // それを three.js の質感にしたもの
+let shellHeight = 2.4;
+let geomExtent = [1, 1];
 /* スキャンした壁を編集に追従させるための控え。
    **家具とまったく同じ扱い。** 壁は別の部品に切り出してあり、自分だけの
    頂点を持つ。だから剛体で動かしても床や天井を引き伸ばさず、継ぎ目はその
@@ -583,7 +586,11 @@ async function loadGeom(id) {
   const g = await api(`/api/scans/${id}/geom`);
   if (id !== current) return;                 // 別のスキャンへ移った
   if (atlas) { atlas.dispose(); atlas = null; }
-  fillColors = g.fillColors || {};
+  fillMaps = g.fillMaps || {};
+  for (const [, t] of fillTex) if (t) t.dispose();
+  fillTex = new Map();
+  shellHeight = g.shellHeight || 2.4;
+  geomExtent = g.extent || [1, 1];
   if (g.textured) {
     atlas = new THREE.TextureLoader().load(`/api/scans/${id}/atlas`, () => {
       for (const m of materials) if (m.map) m.needsUpdate = true;
@@ -1059,6 +1066,23 @@ function applySkin(mat, hasUV) {
 
     床と天井は平面図の外形いっぱいの矩形で足りる。壁の外へはみ出すぶんは、
     同時に起こす壁の面が室内から隠す。凹んだ形の部屋でも三角形分割が要らない。 */
+/** 隙間を塞ぐ面に貼る色。**一色ではなく場所ごとに持つ。**
+    一色だと、茶色のカーテンの穴に壁全体のベージュが出る。 */
+function fillTexture(key) {
+  if (fillTex.has(key)) return fillTex.get(key);
+  const m = fillMaps[key];
+  if (!m) { fillTex.set(key, null); return null; }
+  const t = new THREE.DataTexture(dec(m.data, Uint8Array), m.w, m.h,
+                                  THREE.RGBFormat);
+  t.needsUpdate = true;
+  t.minFilter = THREE.LinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  // 格子の外は縁の色を引き伸ばす。繰り返すと反対側の色が出る。
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  fillTex.set(key, t);
+  return t;
+}
+
 function buildShell() {
   if (shell) {
     scene.remove(shell);
@@ -1070,33 +1094,37 @@ function buildShell() {
   const H = Math.max(...plan.walls.map(w => w.height || 0), 2.4);
   const g = new THREE.Group();
 
-  const quad = (pts, nrm, rgb) => {
+  const quad = (pts, uvs, nrm, key) => {
     const e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
     const e2 = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
     const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
                e1[0] * e2[1] - e1[1] * e2[0]];
     // **向きは計算で合わせる。** 巻き方向を手で決めると裏返りに気付けない。
-    const q = (n[0] * nrm[0] + n[1] * nrm[1] + n[2] * nrm[2]) < 0
-      ? [pts[0], pts[3], pts[2], pts[1]] : pts;
-    const v = [];
-    for (const i of [0, 1, 2, 0, 2, 3]) v.push(...q[i]);
+    const flip = (n[0] * nrm[0] + n[1] * nrm[1] + n[2] * nrm[2]) < 0;
+    const ord = flip ? [0, 3, 2, 1] : [0, 1, 2, 3];
+    const v = [], t = [];
+    for (const i of [0, 1, 2, 0, 2, 3]) {
+      v.push(...pts[ord[i]]);
+      t.push(...uvs[ord[i]]);          // **UV も同じ並べ替えで動かす**
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(t, 2));
     geo.computeVertexNormals();
-    const c = rgb || [150, 150, 150];
+    const map = fillTexture(key);
     g.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      color: new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255),
+      map, color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(0.6, 0.59, 0.55),
       side: cullBack ? THREE.FrontSide : THREE.DoubleSide })));
   };
 
   const M = 0.5;                                   // 壁の外へ少し出す
+  // 色の格子はスキャン当時の枠で作ってあるので、UV もその枠で引く。
+  const uvOf = p => [p[0] / geomExtent[0], p[2] / geomExtent[1]];
+  const flat = y => [[x0 - M, y, z0 - M], [x1 + M, y, z0 - M],
+                     [x1 + M, y, z1 + M], [x0 - M, y, z1 + M]];
   // 床はスキャン（実測で +0.0155m）より下、天井はその上に置く。
-  quad([[x0 - M, -0.02, z0 - M], [x1 + M, -0.02, z0 - M],
-        [x1 + M, -0.02, z1 + M], [x0 - M, -0.02, z1 + M]],
-       [0, 1, 0], fillColors.floor);
-  quad([[x0 - M, H + 0.02, z0 - M], [x1 + M, H + 0.02, z0 - M],
-        [x1 + M, H + 0.02, z1 + M], [x0 - M, H + 0.02, z1 + M]],
-       [0, -1, 0], fillColors.ceiling);
+  quad(flat(-0.02), flat(-0.02).map(uvOf), [0, 1, 0], 'floor');
+  quad(flat(H + 0.02), flat(H + 0.02).map(uvOf), [0, -1, 0], 'ceiling');
 
   for (const w of plan.walls) {
     const f = frameOf(w.a, w.b);
@@ -1108,8 +1136,10 @@ function buildShell() {
     const a = [f.a[0] + f.n[0] * d, f.a[1] + f.n[1] * d];
     const b = [a[0] + f.u[0] * f.L, a[1] + f.u[1] * f.L];
     const hh = w.height || H;
+    const vt = hh / shellHeight;
     quad([[a[0], 0, a[1]], [b[0], 0, b[1]], [b[0], hh, b[1]], [a[0], hh, a[1]]],
-         [f.n[0] * side, 0, f.n[1] * side], fillColors.wall);
+         [[0, 0], [1, 0], [1, vt], [0, vt]],
+         [f.n[0] * side, 0, f.n[1] * side], w.id);
   }
   shell = g;
   scene.add(g);

@@ -30,7 +30,7 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 8
+PAYLOAD_VER = 9
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: テクスチャ付きのときの上限。**形は UV を運べれば足りる**——細かさは
@@ -150,6 +150,9 @@ def atlas_bytes(path: str | Path) -> tuple[bytes, str] | None:
 #: この明るさ以下を「撮れていない」とみなす（0-255）。アトラスの未着色は
 #: 真っ黒で書かれる。暗いだけの本物を巻き込まないよう低めに取る。
 ATLAS_EMPTY = 6
+#: 隙間を塞ぐ面の色を持つ格子の大きさ（m）。細かくすると撮り残しの形まで
+#: 写してしまい、塞いだ面が斑になる。
+SHELL_CELL = 0.05
 #: 黒の縁から何 texel を種にしないか。**JPEG のリンギングで黒の際が暗く
 #: 濁る**ため、そのまま種にすると埋めた色が暗くなる。実測で縁から 1 texel は
 #: 奥より 58.5 暗く、2 texel で 31.8、3 texel で 26.9 暗い。
@@ -416,25 +419,76 @@ def wall_sides(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     return out
 
 
-def surface_colors(C: np.ndarray, F: np.ndarray,
-                   cls: np.ndarray | None) -> dict:
-    """床・天井・壁それぞれの代表色。**撮れていない隙間を塞ぐのに使う。**
+def _grid_map(uv: np.ndarray, col: np.ndarray, w: int, h: int):
+    """点の色を格子に落とし、空いた升目を周りから埋める。
 
-    平均ではなく中央値を取る。撮り残しの縁には暗い値が混じるので、平均だと
-    引きずられる。
+    **一色で塗らない。** 面全体の代表色だと、茶色のカーテンの穴に壁全体の
+    ベージュが出る。場所ごとの平均を持たせれば、埋めた色がその場の色になる。
+    """
+    if w < 2 or h < 2 or len(uv) == 0:
+        return None
+    acc = np.zeros((h, w, 3))
+    cnt = np.zeros((h, w))
+    i = np.clip((uv[:, 0] * w).astype(int), 0, w - 1)
+    j = np.clip((uv[:, 1] * h).astype(int), 0, h - 1)
+    np.add.at(acc, (j, i), col)
+    np.add.at(cnt, (j, i), 1)
+    valid = cnt > 0
+    if valid.sum() < 4:
+        return None
+    acc[valid] /= cnt[valid][:, None]
+    out = np.clip(_pushpull(acc, valid), 0, 255).astype(np.uint8)
+    return dict(w=w, h=h, fill=round(float(valid.mean()), 3),
+                data=_b64(out.reshape(-1)))
+
+
+def surface_maps(Vl: np.ndarray, C: np.ndarray, F: np.ndarray,
+                 cls: np.ndarray | None, walls: list, owner,
+                 extent: list, height: float) -> dict:
+    """撮れていない隙間を塞ぐための色。**場所ごとに持つ。**
+
+    床と天井は真上から見た格子、壁は壁に沿った格子。撮れている面の色を落とし、
+    空いた升目は周りから埋める。壁の格子には、その壁に振り分けた面がすべて
+    入る——カーテンや窓枠も含むので、その前の穴はその色で埋まる。
     """
     out = {}
     if cls is None:
         return out
-    for name, ks in (("floor", (2,)), ("ceiling", (3,)), ("wall", (1, 6, 7))):
-        m = np.isin(cls, ks)
-        if m.sum() < 50:
+    bright = C.max(axis=1) > ATLAS_EMPTY          # 未着色の頂点は混ぜない
+    vi = F.reshape(-1)
+
+    def pick(mask):
+        sel = np.repeat(mask, 3) & bright[vi]
+        return vi[sel]
+
+    for name, ks, axes, size in (
+            ("floor", (2,), (0, 2), extent),
+            ("ceiling", (3,), (0, 2), extent)):
+        idx = pick(np.isin(cls, ks))
+        if len(idx) < 50:
             continue
-        v = C[F[m]].reshape(-1, 3)
-        v = v[v.max(axis=1) > ATLAS_EMPTY]      # 未着色の頂点は混ぜない
-        if len(v) < 50:
-            continue
-        out[name] = [int(x) for x in np.median(v, axis=0)]
+        uv = np.column_stack([Vl[idx, axes[0]] / max(size[0], 1e-6),
+                              Vl[idx, axes[1]] / max(size[1], 1e-6)])
+        m = _grid_map(uv, C[idx].astype(float),
+                      int(size[0] / SHELL_CELL) + 1, int(size[1] / SHELL_CELL) + 1)
+        if m:
+            out[name] = m
+
+    if owner is not None:
+        for k, (wid, a, b) in enumerate(walls):
+            idx = pick(owner == k)
+            if len(idx) < 50:
+                continue
+            a = np.asarray(a, float)
+            d = np.asarray(b, float) - a
+            L = max(float(np.linalg.norm(d)), 1e-6)
+            u = d / L
+            q = Vl[idx][:, [0, 2]] - a
+            uv = np.column_stack([(q @ u) / L, Vl[idx, 1] / max(height, 1e-6)])
+            m = _grid_map(uv, C[idx].astype(float),
+                          int(L / SHELL_CELL) + 1, int(height / SHELL_CELL) + 1)
+            if m:
+                out[wid] = m
     return out
 
 
@@ -624,4 +678,8 @@ def build(bundle: str | Path, face_budget: int | None = None) -> dict:
                                                 wall_sides(Vl, F, cls, wall_lines))],
                 hasClass=cls is not None,
                 textured=UV is not None,
-                fillColors=surface_colors(C, F, cls))
+                fillMaps=surface_maps(Vl, C, F, cls, wall_lines, owner,
+                                      [round(float(rot[:, 0].max() - x0), 3),
+                                       round(float(rot[:, 1].max() - z0), 3)],
+                                      ceil_h),
+                shellHeight=round(float(ceil_h), 3))

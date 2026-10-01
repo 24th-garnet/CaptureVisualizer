@@ -358,3 +358,40 @@ def test_the_dark_fringe_is_not_used_as_a_source(monkeypatch):
 def test_the_fringe_setting_is_on():
     """既定で縁を外す。実測では 1 texel で大半、2 texel で頭打ちだった。"""
     assert webgeom.ATLAS_FRINGE >= 1
+
+
+def test_fill_map_keeps_local_colour():
+    """塞ぐ面の色は場所ごとに持つ。
+
+    一色だと、茶色のカーテンの穴に壁全体のベージュが出る。左半分が茶色、
+    右半分がベージュの面なら、格子もそう分かれていなければならない。
+    """
+    n = 400
+    uv = np.column_stack([np.linspace(0, 0.999, n), np.full(n, 0.5)])
+    col = np.where(uv[:, :1] < 0.5, np.array([[120, 70, 40]]),
+                   np.array([[200, 190, 170]])).astype(float)
+    m = webgeom._grid_map(uv, col, 20, 8)
+    assert m is not None
+    a = np.frombuffer(__import__("base64").b64decode(m["data"]),
+                      np.uint8).reshape(m["h"], m["w"], 3).astype(int)
+    left = a[:, :8].reshape(-1, 3).mean(axis=0)
+    right = a[:, 12:].reshape(-1, 3).mean(axis=0)
+    assert left[0] < 150 and left[2] < 90, left        # 茶色のまま
+    assert right[0] > 180 and right[2] > 140, right    # ベージュのまま
+    assert abs(left - right).mean() > 60, (left, right)
+
+
+def test_fill_map_fills_empty_cells():
+    """撮れていない升目は周りから埋める。"""
+    uv = np.array([[0.05, 0.05], [0.95, 0.05], [0.05, 0.95], [0.95, 0.95]])
+    col = np.full((4, 3), 180.0)
+    m = webgeom._grid_map(uv, col, 12, 12)
+    a = np.frombuffer(__import__("base64").b64decode(m["data"]),
+                      np.uint8).reshape(m["h"], m["w"], 3)
+    assert a.min() > 100, a.min()
+    assert m["fill"] < 0.1                              # 実測は 4 升だけ
+
+
+def test_fill_map_needs_enough_samples():
+    assert webgeom._grid_map(np.zeros((2, 2)), np.zeros((2, 3)), 8, 8) is None
+    assert webgeom._grid_map(np.zeros((0, 2)), np.zeros((0, 3)), 8, 8) is None
