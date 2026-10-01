@@ -873,6 +873,12 @@ document.getElementById('undo').onclick = () => { if (histAt > 0) restore(histAt
 document.getElementById('redo').onclick = () => {
   if (histAt < hist.length - 1) restore(histAt + 1);
 };
+// 本格的な編集は CAD へ渡してから。保存前の変更は図面に入らないので断っておく。
+document.getElementById('dxf').onclick = () => {
+  if (!current) return;
+  if (planDirty) setStatus('保存していない変更は DXF に入りません', true);
+  location.href = `/api/scans/${current}/dxf`;
+};
 document.getElementById('savePlan').onclick = async () => {
   setStatus('図面を保存しています…');
   const doc = Object.assign({}, plan);

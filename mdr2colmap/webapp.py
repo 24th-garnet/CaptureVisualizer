@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from . import meshplan, roomplan, segment, webgeom
+from . import dxf, meshplan, roomplan, segment, webgeom
 from .mesh import Mesh, read_ply_mesh
 
 WEB_ROOT = Path(__file__).parent / "web"
@@ -337,6 +337,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _dxf(self, bundle: Path) -> None:
+        """平面図を DXF で渡す。**編集後と家具の配置を反映した形で出す。**
+
+        画面で見たものがそのまま CAD で開かないと、受け渡しの意味が無い。
+        """
+        body = dxf.encode(dxf.build(plan_payload(bundle),
+                                    _read_json(bundle / "moves.json")))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/dxf; charset=Shift_JIS")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{bundle.stem}.dxf"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _bundle(self, name: str) -> Path | None:
         """**`..` を弾く。** 手元とはいえ、パスをそのまま繋がない。"""
         d = (self.root / name).resolve()
@@ -382,6 +398,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(geom_payload(bundle))
                 if what == "moves":
                     return self._json(_read_json(bundle / "moves.json") or {"moved": []})
+                if what == "dxf":
+                    return self._dxf(bundle)
                 if what == "file" and len(rest) > 2:
                     return self._file(bundle / rest[2])
             self._json({"error": "そんな道は無い"}, 404)
