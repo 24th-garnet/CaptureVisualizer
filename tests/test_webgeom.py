@@ -309,9 +309,26 @@ def test_an_atlas_without_holes_is_returned_untouched():
     assert webgeom.fill_atlas(data) is data
 
 
-def test_fill_reaches_every_corner():
-    """1×1 まで畳むので、どこにも真っ黒は残らない。2×2 で止めると残った。"""
+def test_the_gutter_is_left_black():
+    """チャートの外（外周へ繋がる黒）は埋めない。三角形が参照しないため。"""
     a = np.zeros((64, 64, 3), np.uint8)
-    a[0:4, 0:4] = 200                          # 隅にだけ色がある
+    a[20:44, 20:44] = 200                      # 真ん中にチャートが 1 枚
     out = _decode(webgeom.fill_atlas(_jpeg(a)))
-    assert (out.max(axis=2) == 0).sum() == 0, (out.max(axis=2) == 0).sum()
+    assert out[2, 2].max() <= webgeom.ATLAS_EMPTY, out[2, 2]
+    assert out[32, 32].max() > 150
+
+
+def test_a_hole_is_filled_however_deep_it_sits():
+    """1×1 まで畳むので、縁から遠い穴でも色が届く。2×2 で止めると残った。"""
+    a = np.full((96, 96, 3), 200, np.uint8)
+    a[8:88, 8:88] = 0                          # 縁から 40 texel 奥まで黒
+    out = _decode(webgeom.fill_atlas(_jpeg(a)))
+    assert out[48, 48].max() > 100, out[48, 48]
+
+
+def test_odd_sized_images_do_not_break_the_pyramid():
+    """辺が 2 の冪でなくても畳める。切り捨てると形が合わなくなった。"""
+    a = np.full((67, 53, 3), 150, np.uint8)
+    a[25:35, 20:30] = 0
+    out = _decode(webgeom.fill_atlas(_jpeg(a)))
+    assert out[30, 25].max() > 80, out[30, 25]

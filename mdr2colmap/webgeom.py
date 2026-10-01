@@ -156,43 +156,39 @@ ATLAS_EMPTY = 6
 ATLAS_QUALITY = 95
 
 
-def fill_atlas(data: bytes) -> bytes:
-    """アトラスの黒い領域を、まわりの色から埋める（push-pull）。
+def _pushpull(img: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """ピラミッドへ畳んでから戻し、重みの無いところを埋める（push-pull）。
 
     **バイキュービックでは届かない。** 補間は既知の点のあいだしか埋められず、
-    この穴は最大 173×173 texel ある。ピラミッドへ畳んでから戻せば、どれだけ
-    大きな穴にも近い色が入る。O(N) で反復も要らない（実測 1.9 秒）。
+    この穴は縁から最大 38 texel（約 100mm）奥まっている。畳めばどこまで奥でも
+    色が届く。O(N) で反復も要らない。
 
-    埋めた色は**測った値ではない**。まわりの平均が滑らかに伸びているだけで、
-    模様は作らない。見ていない場所に模様を描くより、のっぺりしているほうが
-    「ここは撮れていない」と分かる。
+    **色は近傍からしか来ない。** 各 texel は「自分の升目に値がある一番細かい
+    段」から取るので、穴の周りに色があればそこで決まる。段を 64 texel で
+    打ち切っても結果が変わらないことを実測で確かめた（差の中央値 0.0）。
 
-    既知の texel は 1 つも変えない（実測で差の最大 0）。
+    1×1 まで畳む。2×2 で止めると、その升目が空のとき埋め残る。
+    拡大は float のまま行う。uint8 を経由すると暗い穴が 0 へ張り付く。
     """
-    from io import BytesIO
-
     from PIL import Image
 
-    img = Image.open(BytesIO(data)).convert("RGB")
-    A = np.asarray(img).astype(np.float32)
-    valid = A.max(axis=2) > ATLAS_EMPTY
-    if valid.all():
-        return data
-
     accs, wts = [], []
-    c = A * valid[..., None]
-    w = valid.astype(np.float32)
+    c = (img * valid[..., None]).astype(np.float32)
+    m = valid.astype(np.float32)
     accs.append(c)
-    wts.append(w)
-    # **1×1 まで畳む。** 2×2 で止めると、その升目が空のとき埋め残る（実測で
-    # 0.035% が真っ黒のまま残った）。
+    wts.append(m)
     while c.shape[0] > 1 or c.shape[1] > 1:
-        h2 = max(c.shape[0] // 2, 1)
-        w2 = max(c.shape[1] // 2, 1)
-        c = c[:h2 * 2, :w2 * 2].reshape(h2, 2, w2, 2, 3).sum((1, 3))
-        w = w[:h2 * 2, :w2 * 2].reshape(h2, 2, w2, 2).sum((1, 3))
+        if c.shape[0] % 2:
+            c = np.concatenate([c, np.zeros((1,) + c.shape[1:], np.float32)], 0)
+            m = np.concatenate([m, np.zeros((1, m.shape[1]), np.float32)], 0)
+        if c.shape[1] % 2:
+            c = np.concatenate([c, np.zeros((c.shape[0], 1, 3), np.float32)], 1)
+            m = np.concatenate([m, np.zeros((m.shape[0], 1), np.float32)], 1)
+        h2, w2 = c.shape[0] // 2, c.shape[1] // 2
+        c = c.reshape(h2, 2, w2, 2, 3).sum((1, 3))
+        m = m.reshape(h2, 2, w2, 2).sum((1, 3))
         accs.append(c)
-        wts.append(w)
+        wts.append(m)
 
     out = None
     for i in range(len(accs) - 1, -1, -1):
@@ -201,12 +197,50 @@ def fill_atlas(data: bytes) -> bytes:
         cur = np.zeros_like(a)
         cur[nz] = a[nz] / ww[nz][:, None]
         if out is not None:
-            up = np.asarray(
-                Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
-                .resize((a.shape[1], a.shape[0]), Image.BICUBIC)).astype(np.float32)
+            up = np.stack([
+                np.asarray(Image.fromarray(out[:, :, k], mode="F")
+                           .resize((a.shape[1], a.shape[0]), Image.BICUBIC))
+                for k in range(3)], axis=2)
             cur[~nz] = up[~nz]
         out = cur
+    return out[:img.shape[0], :img.shape[1]]
 
+
+def fill_atlas(data: bytes) -> bytes:
+    """アトラスの黒い穴を、まわりの色で埋める。
+
+    **埋めるのはチャートの中に閉じた穴だけ**（＝撮れていない面。実測でアトラス
+    の 3.22%）。歩いて見えるのはここだけで、チャートの外の隙間（21.7%）は
+    三角形が参照しない。
+
+    隙間を黒のまま残しても縮小表示で困らない。撮影アプリの膨張がチャートの
+    縁から中央値 31 texel（約 83mm）伸びており、黒が滲むのは mip 4 段目
+    （texel 42mm）より粗いところだけ。
+
+    埋めた色は測った値ではない。まわりの平均が滑らかに伸びているだけで、
+    模様は作らない。見ていない場所に模様を描くより、のっぺりしているほうが
+    「ここは撮れていない」と分かる。既知の texel は変えない。
+    """
+    from io import BytesIO
+
+    from PIL import Image
+    from scipy import ndimage
+
+    img = Image.open(BytesIO(data)).convert("RGB")
+    A = np.asarray(img).astype(np.float32)
+    valid = A.max(axis=2) > ATLAS_EMPTY
+    if valid.all():
+        return data
+
+    lab, n = ndimage.label(~valid)
+    border = set(np.unique(np.concatenate(
+        [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
+    holes = np.isin(lab, [i for i in range(1, n + 1) if i not in border])
+    if not holes.any():
+        return data
+
+    out = A.copy()
+    out[holes] = _pushpull(A, valid)[holes]
     buf = BytesIO()
     Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).save(
         buf, format="JPEG", quality=ATLAS_QUALITY)
