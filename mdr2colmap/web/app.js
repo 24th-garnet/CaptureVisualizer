@@ -457,10 +457,13 @@ function drawPlan() {
     g.addEventListener('pointercancel', onUp);
   });
   placeSvg();
+  updateOverlay();
 }
 
 // --- 3D ---------------------------------------------------------------------
 
+let overlay = null;          // 編集後の壁を立体にしたもの（図面の側）
+let showOverlay = true;
 let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
 let materials = [];          // 裏面の扱いを一括で切り替えるため
 let cullBack = true;
@@ -562,6 +565,7 @@ async function loadGeom(id) {
   target.set(g.extent[0] / 2, 1.2, g.extent[1] / 2);
   cam.r = Math.max(6, Math.hypot(g.extent[0], g.extent[1]) * 0.9);
   document.getElementById('gl-note').hidden = true;
+  updateOverlay();                            // initGL の後でないと作れない
   resizeGL(); place(); draw();
 }
 
@@ -591,6 +595,87 @@ function loop() {
    隅は中心からの相対座標でサーバから来る（向きの計算は Python 側で済んで
    いるので、ここで回転の符号を推し量らなくてよい）。動かすときは中心を
    移して dyaw だけ回す。 */
+/** 編集後の壁を直方体の並びにする。単位は 3D と同じ（平面図の x, z と Y 上）。
+
+    **スキャンは変形しない。** 測ったものと描いたものを別の物として重ねる。
+    変形させると 3D がもう実測ではなくなるうえ、壁の追加や削除は対応する面が
+    スキャンに無いので映せない。図面から立体を起こせば、追加も削除もそのまま
+    出る。
+
+    開口は腰壁と垂れ壁だけ残す。寸法は RoomPlan が返した sill と h を使い、
+    **扉は開いて描かない**——開き勝手が出ないのは平面図と同じ理由。 */
+function overlayBoxes() {
+  const out = [];
+  for (const w of (plan && plan.walls) || []) {
+    const T = w.thickness || 0.12, H = w.height || 2.4;
+    const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
+    const L = Math.hypot(dx, dz);
+    if (L < 1e-6) continue;
+    const u = [dx / L, dz / L], n = [-u[1], u[0]];
+    const at = t => [w.a[0] + u[0] * t, w.a[1] + u[1] * t];
+    const spans = (w.openings || [])
+      .map(o => [Math.max(0, Math.min(L, o.s)), Math.max(0, Math.min(L, o.e)), o])
+      .sort((p, q) => p[0] - q[0]);
+    let cur = 0;
+    for (const [s, e, o] of spans.concat([[L, L, null]])) {
+      if (s > cur + 1e-6) out.push({ p: at(cur), q: at(s), n, T, y0: 0, y1: H });
+      if (!o) break;
+      const sill = o.sill || 0, top = sill + (o.h || 0);
+      if (sill > 0.02) out.push({ p: at(s), q: at(e), n, T, y0: 0, y1: sill });
+      if (H - top > 0.02) out.push({ p: at(s), q: at(e), n, T, y0: top, y1: H });
+      cur = e;
+    }
+  }
+  return out;
+}
+
+/** 直方体 1 個ぶんの三角形と稜線を積む。 */
+function pushBox(b, tri, seg) {
+  const off = (p, s) => [p[0] + b.n[0] * s, p[1] + b.n[1] * s];
+  const base = [off(b.p, b.T / 2), off(b.q, b.T / 2),
+                off(b.q, -b.T / 2), off(b.p, -b.T / 2)];
+  const V = i => (i < 4 ? [base[i][0], b.y0, base[i][1]]
+                        : [base[i - 4][0], b.y1, base[i - 4][1]]);
+  const F = [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6],
+             [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2],
+             [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0]];
+  for (const f of F) for (const i of f) tri.push(...V(i));
+  const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4],
+             [0, 4], [1, 5], [2, 6], [3, 7]];
+  for (const [i, j] of E) { seg.push(...V(i), ...V(j)); }
+}
+
+/** 重ね描きを作り直す。**drawPlan の最後から呼ぶ。**
+
+    図面が変われば必ず drawPlan を通るので、そこに繋げておけば編集が漏れない
+    （家具の位置を place に預けて呼び忘れたのと同じ轍を踏まない）。 */
+function updateOverlay() {
+  if (overlay) {
+    scene.remove(overlay);
+    overlay.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    overlay = null;
+  }
+  if (!renderer || !scene || !plan) return;
+  const tri = [], seg = [];
+  for (const b of overlayBoxes()) pushBox(b, tri, seg);
+  if (!tri.length) return;
+  const col = new THREE.Color(cssColor('--pick'));
+  const gf = new THREE.BufferGeometry();
+  gf.setAttribute('position', new THREE.Float32BufferAttribute(tri, 3));
+  // 陰を付けない材質にする。**面ではなく線画として読ませたい。**
+  const faces = new THREE.Mesh(gf, new THREE.MeshBasicMaterial({
+    color: col, transparent: true, opacity: 0.16,
+    depthWrite: false, side: THREE.DoubleSide }));
+  const gl = new THREE.BufferGeometry();
+  gl.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+  const edges = new THREE.LineSegments(gl, new THREE.LineBasicMaterial({
+    color: col, transparent: true, opacity: 0.8 }));
+  overlay = new THREE.Group();
+  overlay.add(faces, edges);
+  overlay.visible = showOverlay;
+  scene.add(overlay);
+}
+
 function addBox(part) {
   const b = part.box, pts = b.pts, y0 = b.y0, y1 = b.y0 + b.h, v = [];
   for (let i = 0; i < 4; i++) {
@@ -860,6 +945,11 @@ document.getElementById('cull').onchange = e => {
     m.side = cullBack ? THREE.FrontSide : THREE.DoubleSide;
     m.needsUpdate = true;
   }
+  draw();
+};
+document.getElementById('overlay').onchange = e => {
+  showOverlay = e.target.checked;
+  if (overlay) overlay.visible = showOverlay;
   draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };

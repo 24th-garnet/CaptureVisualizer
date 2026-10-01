@@ -267,4 +267,51 @@ onAddPoint(ev(0, 1.5, 'x'));                 // 1 点目を置いた直後
 ok('1 点目を置いても家具の位置が残る', furnT()[0] === t0[0], furnT()[0]);
 adding = false; addFrom = null; drawPlan();
 
+
+// --- 編集後の壁を立体にする（3D への重ね描き）-------------------------------
+// three.js は読めないので、立体の素になる直方体の一覧だけを確かめる。
+restore(0);
+reindex();
+var bx = overlayBoxes();
+// 開口のある壁 3 枚は「手前の壁・垂れ壁・奥の壁」の 3 個、開口の無い w3 は 1 個。
+ok('直方体は 10 個', bx.length === 10, 'n=' + bx.length);
+var full = bx.filter(function (b) { return b.y0 === 0 && b.y1 === 2.408; });
+ok('壁の実部は床から天井まで', full.length === 7, 'n=' + full.length);
+var lint = bx.filter(function (b) { return b.y0 > 0; });
+ok('垂れ壁が 3 個', lint.length === 3, 'n=' + lint.length);
+ok('垂れ壁は開口の上端から始まる', near(lint[0].y0, 2.1269) && near(lint[0].y1, 2.408),
+   JSON.stringify([lint[0].y0, lint[0].y1]));
+ok('腰壁は出ない（sill が 0 のため）',
+   bx.filter(function (b) { return b.y0 === 0 && b.y1 < 2.0; }).length === 0);
+ok('厚みが入っている', bx.every(function (b) { return near(b.T, 0.12); }));
+
+// 壁を動かすと直方体も動く＝編集がそのまま 3D に出る
+onWallDown(ev(0, 0, 'w3'));
+onWallMove(ev(0, 0.5, 'w3'));
+onWallUp();
+var bx2 = overlayBoxes();
+var w3a = bx.filter(function (b) { return near(b.p[1], 0) && near(b.q[1], 0); });
+var w3b = bx2.filter(function (b) { return near(b.p[1], 0.5) && near(b.q[1], 0.5); });
+ok('壁を動かすと直方体も動く', w3a.length === 1 && w3b.length === 1,
+   w3a.length + ' -> ' + w3b.length);
+
+// **追加した壁も出る。** 変形では映せない操作がここでは素直に出る。
+restore(0);
+var before = overlayBoxes().length;
+addWall([0.5, 0.0], [0.5, 3.5754]);
+ok('追加した壁が立体になる', overlayBoxes().length === before + 1,
+   before + ' -> ' + overlayBoxes().length);
+
+// **削除した壁は消える。**
+var id = plan.walls[plan.walls.length - 1].id;
+deleteWall(id);
+ok('削除した壁の立体が消える', overlayBoxes().length === before,
+   'n=' + overlayBoxes().length);
+
+restore(0);
+ok('壁が無ければ直方体も無い', (function () {
+  var keep = plan.walls; plan.walls = [];
+  var n = overlayBoxes().length; plan.walls = keep; return n === 0;
+})());
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');
