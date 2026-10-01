@@ -123,6 +123,16 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .scalebar { fill: none; stroke: var(--soft); stroke-width: var(--w-thin); }
 .scaletext { font-family: var(--mono); font-size: .125px; fill: var(--faint); }
 
+/* 編集のつまみ。**図面の一部ではない**ので記号と混ざらない見た目にする。
+   製図の線は墨一色だが、これは操作の層なので色を使って区別する。 */
+.node { fill: var(--paper); stroke: var(--pick); stroke-width: 0.012;
+        cursor: move; }
+.node:hover, .node.hot { fill: var(--pick); }
+/* 壁そのものは細い線の集まりで掴みにくいので、透明な当たり判定を重ねる。 */
+.wallhit { stroke: transparent; stroke-width: 0.18; cursor: move; }
+.pane-head .tools { align-items: center; }
+.edited-mark { font-family: var(--mono); font-size: 12px; color: var(--moved); }
+
 .bar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
        padding: 12px 0 4px; }
 .bar .spacer { flex: 1; }

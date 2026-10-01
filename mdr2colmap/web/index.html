@@ -36,7 +36,14 @@
         <section class="pane">
           <div class="pane-head">
             <span>平面図</span>
-            <span class="muted" id="plan-source"></span>
+            <span class="tools">
+              <label><input type="checkbox" id="editmode"> 編集</label>
+              <button id="undo" disabled>元に戻す</button>
+              <button id="redo" disabled>やり直す</button>
+              <button id="savePlan" disabled>図面を保存</button>
+              <button id="resetPlan">スキャン直後に戻す</button>
+              <span class="muted" id="plan-source"></span>
+            </span>
           </div>
           <div class="stage"><svg id="plan"></svg></div>
         </section>

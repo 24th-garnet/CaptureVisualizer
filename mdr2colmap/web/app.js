@@ -12,6 +12,20 @@ let state = new Map();       // id -> {dx, dz, dyaw}（m と度）
 let sel = null;
 let dirty = false;
 
+/* 平面図の編集。
+   **編集後を正とする。** ただし plan_edit.json を消せばスキャン直後へ戻る。
+   壁は端点を溶接して節点グラフにする。RoomPlan は壁を独立した線分で返すが、
+   実測したバンドルでは隣り合う端点が 0mm で一致していた。角を動かすと、そこに
+   集まる壁がすべて追従する。 */
+let editing = false;
+let graph = null;            // {nodes: [{x, z}], walls: [{w, na, nb}]}
+let hist = [];               // 平面図の控え（取り消し用）
+let histAt = -1;
+let planDirty = false;
+let dragging = false;        // ドラッグ中は図面の外形を凍結する
+const WELD = 0.05;           // 同じ節点とみなす距離（m）
+const SNAP = 0.05;           // 50mm 刻み
+
 const el = (tag, attrs, parent) => {
   const n = document.createElementNS(NS, tag);
   for (const k in attrs) n.setAttribute(k, attrs[k]);
@@ -75,8 +89,7 @@ async function select(id) {
 
   plan = await api(`/api/scans/${id}/plan`);
   if (plan.error) { setStatus(plan.error, true); return; }
-  document.getElementById('plan-source').textContent =
-    plan.source === 'roomplan' ? 'RoomPlan' : 'メッシュ由来';
+  showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
   const saved = await api(`/api/scans/${id}/moves`);
   for (const m of (saved.moved || [])) {
@@ -87,9 +100,20 @@ async function select(id) {
                       dz: R[1][0] * (d.dx || 0) + R[1][1] * (d.dz || 0),
                       dyaw: d.dyaw || 0 });
   }
+  graph = null; hist = []; histAt = -1; planDirty = false; dragging = false;
+  if (editing) { buildGraph(); pushHistory(); }
   drawPlan();
   place();
+  updateEditButtons();
   loadGeom(id);
+}
+
+/** 図面の出どころ。編集済みなら実測ではないことを明示する。 */
+function showPlanSource() {
+  const n = document.getElementById('plan-source');
+  n.textContent = plan.edited ? '編集済み'
+    : (plan.source === 'roomplan' ? 'RoomPlan' : 'メッシュ由来');
+  n.className = plan.edited ? 'edited-mark' : 'muted';
 }
 
 function facts(s) {
@@ -108,6 +132,80 @@ function facts(s) {
   b.innerHTML = '';
 }
 
+// --- 編集の骨組み -----------------------------------------------------------
+
+const r4 = v => Math.round(v * 10000) / 10000;
+
+/** 壁の端点を溶接して節点グラフを作る。 */
+function buildGraph() {
+  const nodes = [];
+  const find = p => {
+    for (let i = 0; i < nodes.length; i++)
+      if (Math.hypot(nodes[i].x - p[0], nodes[i].z - p[1]) < WELD) return i;
+    nodes.push({ x: p[0], z: p[1] });
+    return nodes.length - 1;
+  };
+  graph = { nodes, walls: plan.walls.map(w => ({ w, na: find(w.a), nb: find(w.b) })) };
+}
+
+/** 節点の座標を壁へ書き戻す。
+
+    **開口は a 端からの距離を保つ。** 実務では開口の位置は壁の端からの実寸で
+    決まるので、壁が伸び縮みしても s は動かさない。壁が縮んで開口が収まらなく
+    なったときだけ端へ寄せる（消しはしない。人が直せるように残す）。 */
+function applyGraph() {
+  for (const g of graph.walls) {
+    const a = graph.nodes[g.na], b = graph.nodes[g.nb];
+    g.w.a = [r4(a.x), r4(a.z)];
+    g.w.b = [r4(b.x), r4(b.z)];
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    for (const o of (g.w.openings || [])) {
+      if (o.e <= L) continue;
+      const width = Math.min(o.e - o.s, L);
+      o.e = r4(L);
+      o.s = r4(L - width);
+    }
+  }
+  if (!dragging) plan.extent = planExtent();
+}
+
+/** 図面の外形。toScreen がこれを使うので、ドラッグ中は変えない。 */
+function planExtent() {
+  let mx = 0, mz = 0;
+  for (const w of plan.walls) {
+    mx = Math.max(mx, w.a[0], w.b[0]); mz = Math.max(mz, w.a[1], w.b[1]);
+  }
+  for (const p of (plan.floor || [])) { mx = Math.max(mx, p[0]); mz = Math.max(mz, p[1]); }
+  return [r4(mx), r4(mz)];
+}
+
+/** 今の状態を控える。**変更の「後」に積む。**
+    直前を積むと最後の操作の結果が控えに残らず、やり直しでそこへ戻れない。
+    編集に入った時点の状態が hist[0] になる。 */
+function pushHistory() {
+  const snap = JSON.stringify({ walls: plan.walls, extent: plan.extent });
+  if (hist[histAt] === snap) return;        // 動かさずに離した
+  hist = hist.slice(0, histAt + 1);
+  hist.push(snap);
+  if (hist.length > 60) hist.shift();
+  histAt = hist.length - 1;
+  updateEditButtons();
+}
+function restore(i) {
+  const snap = JSON.parse(hist[i]);
+  plan.walls = snap.walls;
+  plan.extent = snap.extent;
+  histAt = i;
+  planDirty = true;
+  buildGraph(); drawPlan(); place(); updateEditButtons();
+}
+function updateEditButtons() {
+  const d = (id, on) => { const b = document.getElementById(id); if (b) b.disabled = !on; };
+  d('undo', histAt > 0);
+  d('redo', histAt >= 0 && histAt < hist.length - 1);
+  d('savePlan', planDirty);
+}
+
 // --- 平面図の描画 -----------------------------------------------------------
 
 let objNodes = new Map();
@@ -116,8 +214,18 @@ function toScreen(p) { return [p[1], plan.extent[0] - p[0]]; }   // 長辺を横
 
 function drawPlan() {
   svg.innerHTML = '';
-  const [LX, LZ] = plan.extent, M = 0.7;
-  svg.setAttribute('viewBox', `${-M} ${-M} ${LZ + 2 * M} ${LX + 2 * M}`);
+  const M = 0.7;
+  // **描画範囲は実際の点から取る。** 編集で壁が原点より外へ出ることがあり、
+  // 外形（plan.extent）だけで枠を決めると図がはみ出して切れる。
+  const pxs = [], pzs = [];
+  for (const w of plan.walls) { pxs.push(w.a[0], w.b[0]); pzs.push(w.a[1], w.b[1]); }
+  for (const p of (plan.floor || [])) { pxs.push(p[0]); pzs.push(p[1]); }
+  const px0 = Math.min(...pxs), px1 = Math.max(...pxs);
+  const pz0 = Math.min(...pzs), pz1 = Math.max(...pzs);
+  const [sx0, sy1] = toScreen([px0, pz0]), [sx1, sy0] = toScreen([px1, pz1]);
+  const LX = sy1 - sy0, LZ = sx1 - sx0;
+  svg.setAttribute('viewBox',
+    `${sx0 - M} ${sy0 - M} ${LZ + 2 * M} ${LX + 2 * M}`);
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
   const poly = (pts, cls, parent) => el('polygon',
@@ -134,8 +242,9 @@ function drawPlan() {
                               patternTransform: 'rotate(45)' }, defs);
   el('path', { d: 'M 0 0 V 0.06', class: 'hatchline' }, pat);
 
-  const T = 0.12;                           // 壁厚は作図上の仮定
+  const T0 = 0.12;                          // 壁厚が無いときの作図上の仮定
   for (const w of plan.walls) {
+    const T = w.thickness || T0;
     const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
     const L = Math.hypot(dx, dz) || 1;
     const u = [dx / L, dz / L], n = [-u[1], u[0]];
@@ -212,11 +321,12 @@ function drawPlan() {
   };
   // **押し出しは必ず図の外側へ。** 画面は (x,z)→(z, LX−x) に写しているので、
   // 平面図の辺がどちら向きの線になるかを取り違えると室内へ寸法線が入る。
-  dim([0, 0], [LX, 0], -0.45, mmv(LX));     // 画面では左側の縦線
-  dim([LX, 0], [LX, LZ], -0.45, mmv(LZ));   // 画面では上側の横線
+  dim([px0, pz0], [px1, pz0], -0.45, mmv(px1 - px0));   // 画面では左側の縦線
+  dim([px1, pz0], [px1, pz1], -0.45, mmv(pz1 - pz0));   // 画面では上側の横線
 
   // 開口部の有効寸法。壁の外側へ少し出して添える。
   for (const w of plan.walls) {
+    const T = w.thickness || T0;
     const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
     const L = Math.hypot(dx, dz) || 1;
     const u = [dx / L, dz / L], n = [-u[1], u[0]];
@@ -231,7 +341,31 @@ function drawPlan() {
     }
   }
 
-  const y = LX + M * 0.45;
+  // 編集のつまみ。図面の一部ではないので編集中だけ出す。
+  if (editing && graph) {
+    const hits = el('g', {});
+    for (const g of graph.walls) {
+      const h = line(g.w.a, g.w.b, 'wallhit', hits);
+      h.dataset.wall = g.w.id;
+      h.addEventListener('pointerdown', onWallDown);
+      h.addEventListener('pointermove', onWallMove);
+      h.addEventListener('pointerup', onWallUp);
+      h.addEventListener('pointercancel', onWallUp);
+    }
+    const handles = el('g', {});
+    graph.nodes.forEach((n, i) => {
+      const [hx, hy] = toScreen([n.x, n.z]);
+      const r = el('rect', { class: 'node', x: hx - 0.07, y: hy - 0.07,
+                             width: 0.14, height: 0.14 }, handles);
+      r.dataset.node = i;
+      r.addEventListener('pointerdown', onNodeDown);
+      r.addEventListener('pointermove', onNodeMove);
+      r.addEventListener('pointerup', onNodeUp);
+      r.addEventListener('pointercancel', onNodeUp);
+    });
+  }
+
+  const y = sy1 + M * 0.45;
   el('path', { class: 'scalebar',
     d: `M 0 ${y} H 1 M 0 ${y - .06} V ${y + .06} M 1 ${y - .06} V ${y + .06}` });
   el('text', { x: 1.12, y: y + .06, class: 'scaletext' })
@@ -494,6 +628,75 @@ function onMove(e) {
 }
 function onUp() { drag = null; }
 
+/* 画面の点を平面図の座標へ。画面は (x,z)→(z, LX−x) に写しているので戻す。 */
+function toPlan(evt) {
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+  return [plan.extent[0] - q.y, q.x];
+}
+const snap = v => Math.round(v / SNAP) * SNAP;
+
+let nodeDrag = null, wallDrag = null;
+
+function onNodeDown(e) {
+  if (!editing) return;
+  e.stopPropagation();
+  dragging = true;
+  const i = +e.currentTarget.dataset.node;
+  nodeDrag = { i, start: toPlan(e), base: { ...graph.nodes[i] } };
+  e.currentTarget.setPointerCapture(e.pointerId);
+  e.currentTarget.classList.add('hot');
+}
+function onNodeMove(e) {
+  if (!nodeDrag) return;
+  const p = toPlan(e);
+  const n = graph.nodes[nodeDrag.i];
+  n.x = snap(nodeDrag.base.x + (p[0] - nodeDrag.start[0]));
+  n.z = snap(nodeDrag.base.z + (p[1] - nodeDrag.start[1]));
+  applyGraph(); drawPlan(); place();
+}
+function onNodeUp() {
+  if (!nodeDrag) return;
+  nodeDrag = null; dragging = false;
+  applyGraph(); drawPlan(); place();
+  planDirty = true;
+  pushHistory();
+}
+
+function onWallDown(e) {
+  if (!editing) return;
+  e.stopPropagation();
+  const g = graph.walls.find(x => x.w.id === e.currentTarget.dataset.wall);
+  if (!g) return;
+  dragging = true;
+  const a = graph.nodes[g.na], b = graph.nodes[g.nb];
+  const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+  // **壁は自分の法線方向にだけ動かす。** 自由に動かすと長さと向きが同時に
+  // 変わり、部屋の寸法を直すつもりの操作で角度まで狂う。
+  wallDrag = { g, start: toPlan(e), n: [-(b.z - a.z) / L, (b.x - a.x) / L],
+               base: [{ ...a }, { ...b }] };
+  e.currentTarget.setPointerCapture(e.pointerId);
+}
+function onWallMove(e) {
+  if (!wallDrag) return;
+  const { g, n, base, start } = wallDrag;
+  const p = toPlan(e);
+  const k = snap((p[0] - start[0]) * n[0] + (p[1] - start[1]) * n[1]);
+  graph.nodes[g.na].x = r4(base[0].x + n[0] * k);
+  graph.nodes[g.na].z = r4(base[0].z + n[1] * k);
+  graph.nodes[g.nb].x = r4(base[1].x + n[0] * k);
+  graph.nodes[g.nb].z = r4(base[1].z + n[1] * k);
+  applyGraph(); drawPlan(); place();
+}
+function onWallUp() {
+  if (!wallDrag) return;
+  wallDrag = null; dragging = false;
+  applyGraph(); drawPlan(); place();
+  planDirty = true;
+  pushHistory();
+}
+
 window.addEventListener('keydown', e => {
   if (!sel || !plan) return;
   const m = state.get(sel), step = e.shiftKey ? 0.01 : 0.05;
@@ -526,6 +729,44 @@ document.getElementById('cull').onchange = e => {
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };
 document.getElementById('reload').onclick = loadList;
+
+document.getElementById('editmode').onchange = e => {
+  editing = e.target.checked;
+  if (editing) {
+    if (!graph) buildGraph();
+    if (histAt < 0) pushHistory();         // 編集前の状態を控えに入れておく
+  }
+  drawPlan(); place();
+};
+document.getElementById('undo').onclick = () => { if (histAt > 0) restore(histAt - 1); };
+document.getElementById('redo').onclick = () => {
+  if (histAt < hist.length - 1) restore(histAt + 1);
+};
+document.getElementById('savePlan').onclick = async () => {
+  setStatus('図面を保存しています…');
+  const doc = Object.assign({}, plan);
+  delete doc.edited;
+  const res = await api(`/api/scans/${current}/plan`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(doc) });
+  if (res.ok) {
+    planDirty = false;
+    plan.edited = true;
+    showPlanSource();
+    updateEditButtons();
+    setStatus('保存しました。以後はこの図面が正になります');
+    loadList();
+  } else setStatus(res.error || '保存できませんでした', true);
+};
+document.getElementById('resetPlan').onclick = async () => {
+  if (!confirm('スキャン直後の図面に戻します。編集した内容は失われます。')) return;
+  const res = await api(`/api/scans/${current}/plan-reset`, { method: 'POST' });
+  if (res.ok) {
+    setStatus(res.reverted ? 'スキャン直後に戻しました' : '編集はありませんでした');
+    select(current);
+    loadList();
+  } else setStatus(res.error || '戻せませんでした', true);
+};
 
 document.getElementById('save').onclick = async () => {
   const R = plan.rot, moved = [];
