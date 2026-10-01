@@ -30,7 +30,7 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 6
+PAYLOAD_VER = 7
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: テクスチャ付きのときの上限。**形は UV を運べれば足りる**——細かさは
@@ -407,6 +407,25 @@ def wall_sides(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     return out
 
 
+def surface_colors(C: np.ndarray, F: np.ndarray,
+                   cls: np.ndarray | None) -> dict:
+    """床・天井・壁それぞれの代表色。**撮れていない隙間を塞ぐのに使う。**
+
+    平均ではなく中央値を取る。撮り残しの縁には暗い値が混じるので、平均だと
+    引きずられる。
+    """
+    out = {}
+    if cls is None:
+        return out
+    for name, ks in (("floor", (2,)), ("ceiling", (3,)), ("wall", (1, 6, 7))):
+        m = np.isin(cls, ks)
+        if m.sum() < 50:
+            continue
+        v = C[F[m]].reshape(-1, 3)
+        out[name] = [int(x) for x in np.median(v, axis=0)]
+    return out
+
+
 def _b64(a: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
 
@@ -592,4 +611,5 @@ def build(bundle: str | Path, face_budget: int | None = None) -> dict:
                        for (i, a, b), sd in zip(wall_lines,
                                                 wall_sides(Vl, F, cls, wall_lines))],
                 hasClass=cls is not None,
-                textured=UV is not None)
+                textured=UV is not None,
+                fillColors=surface_colors(C, F, cls))

@@ -577,4 +577,93 @@ walkStep(0.1);
 ok('見上げた角度が入る', near(walkCam.rotation.x, 0.2) && near(walkCam.rotation.y, 0));
 walkKeys.clear(); walkCam = null;
 
+
+// --- 撮れていない隙間を塞ぐ面 -----------------------------------------------
+restore(0);
+reindex();
+var made = [];
+THREE = {
+  Group: function () {
+    this.children = [];
+    this.add = function (o) { this.children.push(o); };
+    this.traverse = function (f) { f(this); this.children.forEach(f); };
+  },
+  BufferGeometry: function () {
+    this.attrs = {};
+    this.setAttribute = function (k, v) { this.attrs[k] = v; };
+    this.computeVertexNormals = function () {};
+    this.dispose = function () {};
+  },
+  Float32BufferAttribute: function (a) { this.array = a; },
+  MeshLambertMaterial: function (o) { this.o = o; },
+  Mesh: function (g, m) { this.geometry = g; this.material = m; made.push({ g: g, m: m }); },
+  MeshBasicMaterial: function (o) { this.o = o; },
+  LineSegments: function (g, m) { this.geometry = g; this.material = m; },
+  LineBasicMaterial: function (o) { this.o = o; },
+  Color: function (r, gg, b) { this.r = r; this.g = gg; this.b = b; },
+  FrontSide: 0, DoubleSide: 2
+};
+renderer = {}; scene = { add: function () {}, remove: function () {} };
+origWalls = plan.walls.map(function (w) {
+  var f = frameOf(w.a, w.b); f.id = w.id; f.inSide = 1; return f;
+});
+fillColors = { floor: [161, 128, 97], ceiling: [171, 163, 149], wall: [182, 175, 156] };
+showShell = true; cullBack = true; shell = null;
+buildShell();
+ok('床・天井・壁ぶんの面ができる', made.length === 2 + plan.walls.length,
+   'n=' + made.length);
+
+function tri(m, i) {                      // i 枚目の三角形の 3 頂点
+  var a = m.g.attrs.position.array;
+  return [[a[i*9], a[i*9+1], a[i*9+2]], [a[i*9+3], a[i*9+4], a[i*9+5]],
+          [a[i*9+6], a[i*9+7], a[i*9+8]]];
+}
+function normal(t) {
+  var e1 = [t[1][0]-t[0][0], t[1][1]-t[0][1], t[1][2]-t[0][2]];
+  var e2 = [t[2][0]-t[0][0], t[2][1]-t[0][1], t[2][2]-t[0][2]];
+  return [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
+}
+var flo = made[0], cei = made[1];
+ok('床は上を向く', normal(tri(flo,0))[1] > 0 && normal(tri(flo,1))[1] > 0);
+ok('天井は下を向く', normal(tri(cei,0))[1] < 0 && normal(tri(cei,1))[1] < 0);
+// スキャンの床は実測で +0.0155m。塞ぐ面はその下でなければ手前に出てしまう。
+ok('床はスキャンより下', tri(flo,0)[0][1] < 0, 'y=' + tri(flo,0)[0][1]);
+ok('天井はスキャンより上', tri(cei,0)[0][1] > 2.408, 'y=' + tri(cei,0)[0][1]);
+ok('床の色は測った中央値', flo.m.o.color.r === 161/255);
+
+// 壁は室内を向き、スキャンした面より外になければならない
+var okdir = true, okout = true;
+for (var i = 0; i < plan.walls.length; i++) {
+  var w = plan.walls[i], f = frameOf(w.a, w.b), m = made[2 + i];
+  var n = normal(tri(m, 0));
+  // 室内向き（inSide=+1 なので f.n の向き）
+  if (n[0] * f.n[0] + n[2] * f.n[1] <= 0) okdir = false;
+  // 壁線からの符号つき距離が負＝室外側
+  var q = [tri(m,0)[0][0] - f.a[0], tri(m,0)[0][2] - f.a[1]];
+  if (q[0] * f.n[0] + q[1] * f.n[1] > -0.05) okout = false;
+}
+ok('壁は室内を向く', okdir);
+ok('壁はスキャンした面より外にある', okout);
+ok('壁は床から天井まで', (function () {
+  var t0 = tri(made[2], 0), t1 = tri(made[2], 1);
+  var ys = t0.concat(t1).map(function (p) { return p[1]; });
+  return near(Math.min.apply(null, ys), 0) && Math.max.apply(null, ys) > 2.3;
+})());
+
+// 切ると作らない
+made = []; showShell = false; buildShell();
+ok('切ると面を作らない', made.length === 0);
+showShell = true;
+
+// 壁を消したらその面も消える
+// （drawPlan 経由でも作られるので、数えるのは shell の中身のほう）
+deleteWall('w3');
+ok('消した壁は塞がない', shell.children.length === 2 + plan.walls.length,
+   shell.children.length + ' / 壁 ' + plan.walls.length);
+restore(0);
+ok('戻すとまた塞ぐ', shell.children.length === 2 + plan.walls.length,
+   shell.children.length + ' / 壁 ' + plan.walls.length);
+
+THREE = undefined; renderer = null; scene = null; shell = null;
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

@@ -468,6 +468,7 @@ function drawPlan() {
   });
   placeSvg();
   updateOverlay();
+  buildShell();
   moveWalls();
   clipParts();
 }
@@ -492,6 +493,9 @@ const walkKeys = new Set();
 
 let overlay = null;          // 編集後の壁を立体にしたもの（図面の側）
 let showOverlay = true;
+let shell = null;            // 撮れていない隙間を塞ぐ面
+let showShell = true;
+let fillColors = {};         // 床・天井・壁の代表色（サーバで測った中央値）
 /* スキャンした壁を編集に追従させるための控え。
    **家具とまったく同じ扱い。** 壁は別の部品に切り出してあり、自分だけの
    頂点を持つ。だから剛体で動かしても床や天井を引き伸ばさず、継ぎ目はその
@@ -579,6 +583,7 @@ async function loadGeom(id) {
   const g = await api(`/api/scans/${id}/geom`);
   if (id !== current) return;                 // 別のスキャンへ移った
   if (atlas) { atlas.dispose(); atlas = null; }
+  fillColors = g.fillColors || {};
   if (g.textured) {
     atlas = new THREE.TextureLoader().load(`/api/scans/${id}/atlas`, () => {
       for (const m of materials) if (m.map) m.needsUpdate = true;
@@ -637,6 +642,7 @@ async function loadGeom(id) {
   document.getElementById('gl-note').hidden = true;
   document.getElementById('walk').disabled = false;
   updateOverlay();                            // initGL の後でないと作れない
+  buildShell();
   moveWalls();
   clipParts();
   resizeGL(); place(); draw();
@@ -1038,6 +1044,77 @@ function applySkin(mat, hasUV) {
   mat.needsUpdate = true;
 }
 
+/** 撮れていない隙間を塞ぐ面を作る。
+
+    **メッシュそのものに穴がある。** 実測で床の被覆は 68.8%、壁は 76.5〜95.0%。
+    三角形が無いので、アトラスをいくら埋めても背景が透けて黒く見える。
+
+    平面図は「そこに床と壁がある」と言っているので、その形で面を起こして
+    スキャンの**裏側**に置く。撮れたところはスキャンが手前に出て、撮れて
+    いないところだけこの面が見える。
+
+    色は模様を持たない一色にする（サーバで測った床・天井・壁の中央値）。
+    **測っていない場所に模様を描かない**ための区別で、のっぺりしていること
+    自体が「ここは撮れていない」の表示になる。
+
+    床と天井は平面図の外形いっぱいの矩形で足りる。壁の外へはみ出すぶんは、
+    同時に起こす壁の面が室内から隠す。凹んだ形の部屋でも三角形分割が要らない。 */
+function buildShell() {
+  if (shell) {
+    scene.remove(shell);
+    shell.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    shell = null;
+  }
+  if (!renderer || !scene || !plan || !showShell) return;
+  const [x0, x1, z0, z1] = planBounds();
+  const H = Math.max(...plan.walls.map(w => w.height || 0), 2.4);
+  const g = new THREE.Group();
+
+  const quad = (pts, nrm, rgb) => {
+    const e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
+    const e2 = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
+    const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+               e1[0] * e2[1] - e1[1] * e2[0]];
+    // **向きは計算で合わせる。** 巻き方向を手で決めると裏返りに気付けない。
+    const q = (n[0] * nrm[0] + n[1] * nrm[1] + n[2] * nrm[2]) < 0
+      ? [pts[0], pts[3], pts[2], pts[1]] : pts;
+    const v = [];
+    for (const i of [0, 1, 2, 0, 2, 3]) v.push(...q[i]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.computeVertexNormals();
+    const c = rgb || [150, 150, 150];
+    g.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      color: new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255),
+      side: cullBack ? THREE.FrontSide : THREE.DoubleSide })));
+  };
+
+  const M = 0.5;                                   // 壁の外へ少し出す
+  // 床はスキャン（実測で +0.0155m）より下、天井はその上に置く。
+  quad([[x0 - M, -0.02, z0 - M], [x1 + M, -0.02, z0 - M],
+        [x1 + M, -0.02, z1 + M], [x0 - M, -0.02, z1 + M]],
+       [0, 1, 0], fillColors.floor);
+  quad([[x0 - M, H + 0.02, z0 - M], [x1 + M, H + 0.02, z0 - M],
+        [x1 + M, H + 0.02, z1 + M], [x0 - M, H + 0.02, z1 + M]],
+       [0, -1, 0], fillColors.ceiling);
+
+  for (const w of plan.walls) {
+    const f = frameOf(w.a, w.b);
+    const ow = origWalls.find(o => o.id === w.id);
+    // 室内側は測って決める（巻き方向には頼らない）。壁線は内法面なので、
+    // スキャンした面（線から 1〜43mm 外）より外へ出して裏に回す。
+    const side = ow ? ow.inSide : 1;
+    const d = -side * 0.08;
+    const a = [f.a[0] + f.n[0] * d, f.a[1] + f.n[1] * d];
+    const b = [a[0] + f.u[0] * f.L, a[1] + f.u[1] * f.L];
+    const hh = w.height || H;
+    quad([[a[0], 0, a[1]], [b[0], 0, b[1]], [b[0], hh, b[1]], [a[0], hh, a[1]]],
+         [f.n[0] * side, 0, f.n[1] * side], fillColors.wall);
+  }
+  shell = g;
+  scene.add(g);
+}
+
 function addBox(part) {
   const b = part.box, pts = b.pts, y0 = b.y0, y1 = b.y0 + b.h, v = [];
   for (let i = 0; i < 4; i++) {
@@ -1307,7 +1384,12 @@ document.getElementById('cull').onchange = e => {
     m.side = cullBack ? THREE.FrontSide : THREE.DoubleSide;
     m.needsUpdate = true;
   }
+  buildShell();
   draw();
+};
+document.getElementById('shell').onchange = e => {
+  showShell = e.target.checked;
+  buildShell(); draw();
 };
 document.getElementById('tex').onchange = e => {
   useTex = e.target.checked;
