@@ -332,3 +332,29 @@ def test_odd_sized_images_do_not_break_the_pyramid():
     a[25:35, 20:30] = 0
     out = _decode(webgeom.fill_atlas(_jpeg(a)))
     assert out[30, 25].max() > 80, out[30, 25]
+
+
+def test_the_dark_fringe_is_not_used_as_a_source(monkeypatch):
+    """黒の際は種にしない。
+
+    JPEG は黒との境でリンギングを出し、際の texel が暗く濁る（実測で縁から
+    1 texel は奥より 58.5 暗い）。そのまま種にすると穴が暗く埋まる。
+    縁を外した版が外さない版より明るく、内側の本当の色に近いことを見る。
+    """
+    a = np.full((96, 96, 3), 210, np.uint8)
+    a[30:66, 30:66] = 40                      # 暗い縁
+    a[34:62, 34:62] = 0                       # 穴
+    src = _jpeg(a)
+
+    monkeypatch.setattr(webgeom, "ATLAS_FRINGE", 0)
+    raw = _decode(webgeom.fill_atlas(src))[48, 48].mean()
+    monkeypatch.setattr(webgeom, "ATLAS_FRINGE", 6)
+    cut = _decode(webgeom.fill_atlas(src))[48, 48].mean()
+
+    assert cut > raw + 20, f"縁を外しても変わらない: {raw} -> {cut}"
+    assert abs(cut - 210) < abs(raw - 210), f"内側の色から遠い: {raw} -> {cut}"
+
+
+def test_the_fringe_setting_is_on():
+    """既定で縁を外す。実測では 1 texel で大半、2 texel で頭打ちだった。"""
+    assert webgeom.ATLAS_FRINGE >= 1

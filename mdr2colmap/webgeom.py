@@ -30,7 +30,7 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 7
+PAYLOAD_VER = 8
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: テクスチャ付きのときの上限。**形は UV を運べれば足りる**——細かさは
@@ -150,6 +150,10 @@ def atlas_bytes(path: str | Path) -> tuple[bytes, str] | None:
 #: この明るさ以下を「撮れていない」とみなす（0-255）。アトラスの未着色は
 #: 真っ黒で書かれる。暗いだけの本物を巻き込まないよう低めに取る。
 ATLAS_EMPTY = 6
+#: 黒の縁から何 texel を種にしないか。**JPEG のリンギングで黒の際が暗く
+#: 濁る**ため、そのまま種にすると埋めた色が暗くなる。実測で縁から 1 texel は
+#: 奥より 58.5 暗く、2 texel で 31.8、3 texel で 26.9 暗い。
+ATLAS_FRINGE = 2
 #: 埋めたアトラスを書き戻すときの JPEG 品質。**既知の texel を変えたくない**
 #: ので高めに取る。実測で q=92 は差の平均 1.02（2.96MB）、q=95 は 0.45
 #: （3.67MB）。元が 3.67MB なので、95 なら大きさを変えずに済む。
@@ -239,8 +243,13 @@ def fill_atlas(data: bytes) -> bytes:
     if not holes.any():
         return data
 
+    # **黒の際は種にしない。** JPEG のリンギングで暗く濁っており、そのまま
+    # 使うと穴が暗く埋まる（実測で縁の 1 texel は奥より 58.5 暗い）。
+    src = ndimage.binary_erosion(valid, iterations=ATLAS_FRINGE)
+    if not src.any():
+        src = valid
     out = A.copy()
-    out[holes] = _pushpull(A, valid)[holes]
+    out[holes] = _pushpull(A, src)[holes]
     buf = BytesIO()
     Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).save(
         buf, format="JPEG", quality=ATLAS_QUALITY)
@@ -422,6 +431,9 @@ def surface_colors(C: np.ndarray, F: np.ndarray,
         if m.sum() < 50:
             continue
         v = C[F[m]].reshape(-1, 3)
+        v = v[v.max(axis=1) > ATLAS_EMPTY]      # 未着色の頂点は混ぜない
+        if len(v) < 50:
+            continue
         out[name] = [int(x) for x in np.median(v, axis=0)]
     return out
 
