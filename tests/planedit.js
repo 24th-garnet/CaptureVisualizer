@@ -10,6 +10,9 @@ Node.prototype.appendChild = function(n) { this.kids.push(n); return n; };
 Node.prototype.addEventListener = function(){};
 Node.prototype.querySelector = function(){ return null; };
 Node.prototype.querySelectorAll = function(){ return []; };
+var captured = null;
+Node.prototype.setPointerCapture = function(){ captured = this; };
+Node.prototype.releasePointerCapture = function(){ captured = null; };
 Node.prototype.createSVGPoint = function(){
   return { x: 0, y: 0, matrixTransform: function(m){ return m.apply(this); } };
 };
@@ -88,7 +91,11 @@ reindex();
 var s1 = W.w1.openings[0].s, w1width = W.w1.openings[0].e - W.w1.openings[0].s;
 
 onWallDown(ev(0, 0, 'w3'));
-onWallMove(ev(0, 0.5, 'w3'));       // w3 の法線（z）へ 0.5
+// **捕捉は svg が持たなければならない。** drawPlan は svg.innerHTML を空に
+// するので、掴んだ線に預けると最初の 1 コマで消え、壁が 1 刻みで止まる。
+ok('捕捉は描き直しで消えない svg が持つ', captured === els['plan']);
+onWallMove(ev(0, 0.2, 'w3'));
+onWallMove(ev(0, 0.5, 'w3'));       // 描き直しを挟んでも続く
 onWallUp();
 reindex();
 ok('w3 が法線方向に 0.5 動く', near(W.w3.a[1], 0.5) && near(W.w3.b[1], 0.5),

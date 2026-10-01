@@ -419,20 +419,16 @@ function drawPlan() {
                      g.w.id === selWall ? 'wallhit sel' : 'wallhit', hits);
       h.dataset.wall = g.w.id;
       h.addEventListener('pointerdown', onWallDown);
-      h.addEventListener('pointermove', onWallMove);
-      h.addEventListener('pointerup', onWallUp);
-      h.addEventListener('pointercancel', onWallUp);
     }
     const handles = el('g', {});
     graph.nodes.forEach((n, i) => {
       const [hx, hy] = toScreen([n.x, n.z]);
-      const r = el('rect', { class: 'node', x: hx - 0.07, y: hy - 0.07,
+      const hot = nodeDrag && nodeDrag.i === i;
+      const r = el('rect', { class: hot ? 'node hot' : 'node',
+                             x: hx - 0.07, y: hy - 0.07,
                              width: 0.14, height: 0.14 }, handles);
       r.dataset.node = i;
       r.addEventListener('pointerdown', onNodeDown);
-      r.addEventListener('pointermove', onNodeMove);
-      r.addEventListener('pointerup', onNodeUp);
-      r.addEventListener('pointercancel', onNodeUp);
     });
     if (addFrom) {
       // 1 点目の印。2 点目を指すまで出しておく。
@@ -723,14 +719,31 @@ const snap = v => Math.round(v / SNAP) * SNAP;
 
 let nodeDrag = null, wallDrag = null;
 
+/* 移動と終了は掴んだ要素ではなく svg で受ける。
+
+   **drawPlan は svg.innerHTML を空にするので、掴んだ要素は最初の 1 コマで
+   消える。** そこに捕捉を預けると、そこから先の pointermove が届かず、壁が
+   1 刻みだけ動いて止まる。svg そのものは差し替わらないので捕捉が続く。 */
+svg.addEventListener('pointermove', e => {
+  if (nodeDrag) onNodeMove(e);
+  else if (wallDrag) onWallMove(e);
+});
+const endEdit = e => {
+  if (nodeDrag) onNodeUp(e);
+  else if (wallDrag) onWallUp(e);
+};
+svg.addEventListener('pointerup', endEdit);
+svg.addEventListener('pointercancel', endEdit);
+svg.addEventListener('lostpointercapture', endEdit);
+
 function onNodeDown(e) {
   if (!editing) return;
   e.stopPropagation();
   dragging = true;
   const i = +e.currentTarget.dataset.node;
   nodeDrag = { i, start: toPlan(e), base: { ...graph.nodes[i] } };
-  e.currentTarget.setPointerCapture(e.pointerId);
-  e.currentTarget.classList.add('hot');
+  svg.setPointerCapture(e.pointerId);
+  drawPlan();
 }
 function onNodeMove(e) {
   if (!nodeDrag) return;
@@ -761,7 +774,7 @@ function onWallDown(e) {
   // 変わり、部屋の寸法を直すつもりの操作で角度まで狂う。
   wallDrag = { g, start: toPlan(e), n: [-(b.z - a.z) / L, (b.x - a.x) / L],
                base: [{ ...a }, { ...b }], moved: false };
-  e.currentTarget.setPointerCapture(e.pointerId);
+  svg.setPointerCapture(e.pointerId);
 }
 function onWallMove(e) {
   if (!wallDrag) return;

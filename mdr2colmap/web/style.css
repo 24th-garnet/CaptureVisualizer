@@ -128,8 +128,12 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .node { fill: var(--paper); stroke: var(--pick); stroke-width: 0.012;
         cursor: move; }
 .node:hover, .node.hot { fill: var(--pick); }
-/* 壁そのものは細い線の集まりで掴みにくいので、透明な当たり判定を重ねる。 */
-.wallhit { stroke: transparent; stroke-width: 0.18; cursor: move; }
+/* 壁そのものは細い線の集まりで掴みにくいので、透明な当たり判定を重ねる。
+   **塗りも線も透明だと当たり判定を持たない実装がある**ので明示する
+   （家具が掴めなくなったのと同じ理由）。 */
+.wallhit { fill: none; stroke: transparent; stroke-width: 0.18;
+           pointer-events: stroke; cursor: move; }
+.addsurface { pointer-events: all; cursor: crosshair; }
 .pane-head .tools { align-items: center; }
 .editbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
            padding: 7px 12px; border-bottom: 1px solid var(--edge); }
