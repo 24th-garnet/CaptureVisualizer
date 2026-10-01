@@ -459,6 +459,7 @@ function drawPlan() {
   placeSvg();
   updateOverlay();
   moveWalls();
+  clipParts();
 }
 
 // --- 3D ---------------------------------------------------------------------
@@ -471,6 +472,8 @@ let showOverlay = true;
    まま開く。開いた先は撮れていないので色も付かない——それが実測の限界で、
    引き伸ばして繕うと測っていない面を描くことになる。 */
 let wallParts = [];          // [{id, geo, base, orig, moved}]
+let allParts = [];           // 索引を切り詰めるための控え
+let origWalls = [];          // スキャン当時の壁（室内側つき）
 let followWalls = true;
 let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
 let materials = [];          // 裏面の扱いを一括で切り替えるため
@@ -549,11 +552,17 @@ async function loadGeom(id) {
     return;
   }
   wallParts = [];
+  allParts = [];
+  origWalls = (g.walls || []).map(w =>
+    Object.assign(frameOf(w.a, w.b), { id: w.id, inSide: w.inSide || 1 }));
   for (const part of g.parts) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(dec(part.pos, Float32Array), 3));
     geo.setAttribute('color', new THREE.BufferAttribute(dec(part.col, Uint8Array), 3, true));
-    geo.setIndex(new THREE.BufferAttribute(dec(part.idx, Uint32Array), 1));
+    const idx = dec(part.idx, Uint32Array);
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    allParts.push({ geo, idx, baseIdx: idx.slice(), kind: part.kind,
+                    wallId: part.wall || null, clipped: false });
     if (part.kind === 'object') geo.translate(-part.c[0], 0, -part.c[2]);
     geo.computeVertexNormals();
     // **裏面を描かない。** ARKit のメッシュは法線が室内側を向くので、
@@ -581,6 +590,7 @@ async function loadGeom(id) {
   document.getElementById('gl-note').hidden = true;
   updateOverlay();                            // initGL の後でないと作れない
   moveWalls();
+  clipParts();
   resizeGL(); place(); draw();
 }
 
@@ -734,6 +744,64 @@ function moveWalls() {
     wp.geo.attributes.position.needsUpdate = true;
     wp.geo.computeVertexNormals();
     wp.moved = !still;
+  }
+}
+
+/** 編集後の部屋の外に残った面を隠す。
+
+    **壁を内側へ動かすと、床・天井と直交する壁がその外へ取り残される。**
+    実測で 0.3m 動かすと床天井 1.71 m2 + 直交壁 1.15 m2。大きな連結成分の
+    一部なので、小片を落とす処理では消せない。
+
+    動いた壁ごとに半空間で切る。部屋の外形を多角形に組み直さないので、壁を
+    足してループが閉じていなくても破綻しない。切る境界は壁線ではなく**壁の
+    外面**（線から壁厚ぶん外）——壁線で切ると壁そのものが消える。 */
+function clipParts() {
+  if (!plan || !allParts.length) return;
+  const cut = [];
+  if (followWalls) {
+    for (const ow of origWalls) {
+      const w = plan.walls.find(v => v.id === ow.id);
+      if (!w) continue;
+      const t = frameOf(w.a, w.b);
+      if (Math.abs(t.a[0] - ow.a[0]) < 1e-6 && Math.abs(t.a[1] - ow.a[1]) < 1e-6
+          && Math.abs(t.u[0] - ow.u[0]) < 1e-6 && Math.abs(t.u[1] - ow.u[1]) < 1e-6
+          && Math.abs(t.L - ow.L) < 1e-6) continue;
+      cut.push({ id: ow.id, f: t, side: ow.inSide, m: w.thickness || 0.12 });
+    }
+  }
+  for (const p of allParts) {
+    // 家具は切らない（壁を貫くのは採用済みの判断）。自分の壁では切らない
+    // ——壁の実体は自分の線より外にあるので、切れば丸ごと消える。
+    const mine = p.kind === 'object' ? [] : cut.filter(c => c.id !== p.wallId);
+    if (!mine.length) {
+      if (p.clipped) {
+        p.idx.set(p.baseIdx);
+        p.geo.index.needsUpdate = true;
+        p.geo.setDrawRange(0, p.baseIdx.length);
+        p.clipped = false;
+      }
+      continue;
+    }
+    const pos = p.geo.attributes.position.array, I = p.baseIdx, O = p.idx;
+    let n = 0;
+    for (let f = 0; f < I.length; f += 3) {
+      const a = I[f] * 3, b = I[f + 1] * 3, c = I[f + 2] * 3;
+      const x = (pos[a] + pos[b] + pos[c]) / 3;
+      const z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+      let drop = false;
+      for (const q of mine) {
+        const qx = x - q.f.a[0], qz = z - q.f.a[1];
+        const sv = qx * q.f.u[0] + qz * q.f.u[1];
+        if (sv < -0.15 || sv > q.f.L + 0.15) continue;   // その壁の区間の外
+        if ((qx * q.f.n[0] + qz * q.f.n[1]) * q.side < -q.m) { drop = true; break; }
+      }
+      if (drop) continue;
+      O[n++] = I[f]; O[n++] = I[f + 1]; O[n++] = I[f + 2];
+    }
+    p.geo.index.needsUpdate = true;
+    p.geo.setDrawRange(0, n);
+    p.clipped = true;
   }
 }
 
@@ -1015,7 +1083,7 @@ document.getElementById('overlay').onchange = e => {
 };
 document.getElementById('follow').onchange = e => {
   followWalls = e.target.checked;
-  moveWalls(); draw();
+  moveWalls(); clipParts(); draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };

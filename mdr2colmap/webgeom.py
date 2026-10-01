@@ -22,12 +22,14 @@ import struct
 from pathlib import Path
 
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 4
+PAYLOAD_VER = 5
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: 家具の格子（m）。小さいので細かく残す。
@@ -45,6 +47,11 @@ PROTRUSION_REACH = 0.6
 #: 床と天井から離す距離（m）。分類が none の床・天井面が 23% あるので、
 #: **分類だけでは止められない。** 高さでも止める。
 PLANE_CLEAR = 0.15
+#: 落とす連結成分の面積（m^2）。**中空に浮いた小片を消す。**
+#: 実測では成分の大きさに段差があり、本物の面（床 10.04 / 天井 7.77 / 壁
+#: 5.90〜7.74 / 家具 1.46〜4.81 m^2）と小片の間が 6 倍以上開いている。ただし
+#: 0.1〜0.25 m^2 には椅子の脚（0.242）のような本物が混じるので、そこは残す。
+COMPONENT_MIN_AREA = 0.02
 #: 突出物を辿るときに越えない分類。床・天井のほか、家具（table / seat）も
 #: 止める。RoomPlan が箱を持たない家具の縁を壁へ吸い込まないため。
 STOP_CLASSES = (2, 3, 4, 5)
@@ -170,6 +177,59 @@ def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     return own
 
 
+def drop_small(p: np.ndarray, c: np.ndarray, f: np.ndarray,
+               min_area: float = COMPONENT_MIN_AREA):
+    """浮いた小片を落とす。連結成分ごとの面積で見る。
+
+    部品に切り分けたあとに呼ぶ。床と天井は壁を外した時点で別々の成分になる
+    が、どちらも十分大きいので残る。
+    """
+    if len(f) == 0:
+        return p, c, f
+    e = np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(p), len(p)))
+    k, lab = connected_components(g, directed=False)
+    if k == 1:
+        return p, c, f
+    t = p[f]
+    ar = np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1) / 2
+    fl = lab[f[:, 0]]
+    area = np.zeros(k)
+    np.add.at(area, fl, ar)
+    keep = area[fl] >= min_area
+    if keep.all():
+        return p, c, f
+    f = f[keep]
+    if len(f) == 0:
+        return p[:0], c[:0], f
+    used, remap = np.unique(f, return_inverse=True)
+    return p[used], c[used], remap.reshape(-1, 3)
+
+
+def wall_sides(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
+               walls: list) -> list[int]:
+    """壁ごとに「法線の向きが室内かどうか」を測る。+1 なら n が室内を指す。
+
+    **巻き方向に頼らない。** RoomPlan の壁は法線が室内を向くが、メッシュ由来
+    の平面図や人が足した壁ではその保証が無い。床の面がある側を室内とする。
+    """
+    cen3 = Vl[F]
+    floor = (cls == 2) if cls is not None else (cen3[:, :, 1].mean(axis=1) < 0.15)
+    cen = cen3[:, :, [0, 2]].mean(axis=1)[floor]
+    out = []
+    for _, a, b in walls:
+        a = np.asarray(a, float)
+        d = np.asarray(b, float) - a
+        L = max(float(np.linalg.norm(d)), 1e-9)
+        u = d / L
+        n = np.array([-u[1], u[0]])
+        q = cen - a
+        s, dd = q @ u, q @ n
+        m = (s > 0) & (s < L) & (np.abs(dd) < 1.5)
+        out.append(1 if (not m.any() or float(np.median(dd[m])) >= 0) else -1)
+    return out
+
+
 def _b64(a: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
 
@@ -253,7 +313,7 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
         sel = assigned == i
         if sel.sum() < 30:
             continue
-        p, c, f = cluster(Vl, C, F[sel], OBJECT_CELL)
+        p, c, f = drop_small(*cluster(Vl, C, F[sel], OBJECT_CELL))
         if len(f) == 0:
             continue
         cxz = np.array([b.center[0], b.center[2]]) @ R.T
@@ -294,9 +354,9 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
 
     room = F[rest]
     for cell in ROOM_CELLS:
-        groups = [cluster(Vl, C, room, cell)]
+        groups = [drop_small(*cluster(Vl, C, room, cell))]
         for _, sel in wall_sel:
-            groups.append(cluster(Vl, C, F[sel], cell))
+            groups.append(drop_small(*cluster(Vl, C, F[sel], cell)))
         total = sum(len(g[2]) for g in groups)
         if total + used_faces <= face_budget:
             break
@@ -322,5 +382,7 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
                 origin=[round(x0, 4), round(z0, 4)],
                 floorY=round(float(floor_y), 4),
                 sourceFaces=int(len(F)), roomCell=cell,
-                walls=[dict(id=i, a=a, b=b) for i, a, b in wall_lines],
+                walls=[dict(id=i, a=a, b=b, inSide=sd)
+                       for (i, a, b), sd in zip(wall_lines,
+                                                wall_sides(Vl, F, cls, wall_lines))],
                 hasClass=cls is not None)

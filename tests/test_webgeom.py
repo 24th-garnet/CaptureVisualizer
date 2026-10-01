@@ -182,3 +182,39 @@ def test_growth_stops_at_the_reach():
     assert not long[own >= 0].all() or took.sum() < long.sum(), "全部拾っている"
     assert z[took].max() <= webgeom.PROTRUSION_REACH + 1e-9, z[took].max()
     assert (own[long & (z > webgeom.PROTRUSION_REACH)] == -1).all()
+
+
+def test_small_components_are_dropped():
+    """中空に浮いた小片を落とす。床と天井は別成分だが十分大きいので残る。"""
+    V = np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1],          # 1 辺 1m の床
+                  [5, 1, 5], [5.02, 1, 5], [5, 1, 5.02]])   # 2cm の小片
+    C = np.zeros((6, 3), np.uint8)
+    F = np.array([[0, 1, 2], [3, 4, 5]])
+    p, c, f = webgeom.drop_small(V, C, F, 0.02)
+    assert len(f) == 1, f
+    assert len(p) == 3
+    assert np.allclose(np.sort(p[f[0]], axis=0), np.sort(V[:3], axis=0))
+
+
+def test_nothing_is_dropped_when_all_parts_are_big():
+    V = np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [5, 1, 5], [6, 1, 5], [5, 1, 6]])
+    C = np.zeros((6, 3), np.uint8)
+    F = np.array([[0, 1, 2], [3, 4, 5]])
+    _, _, f = webgeom.drop_small(V, C, F, 0.02)
+    assert len(f) == 2
+
+
+def test_wall_sides_are_measured_not_assumed():
+    """室内側は床の面がある側で決める。巻き方向には頼らない。"""
+    V, F, cls = _box_room()
+    sides = webgeom.wall_sides(V, F, cls, WALLS)
+    assert sides == [1, 1, 1, 1], sides
+    # 向きを逆にした壁は -1 になる
+    flipped = [(i, b, a) for i, a, b in WALLS]
+    assert webgeom.wall_sides(V, F, cls, flipped) == [-1, -1, -1, -1]
+
+
+def test_wall_sides_without_classification():
+    """分類が無くても、低い面を床とみなして測れる。"""
+    V, F, _ = _box_room()
+    assert webgeom.wall_sides(V, F, None, WALLS) == [1, 1, 1, 1]

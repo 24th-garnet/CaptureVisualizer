@@ -373,4 +373,74 @@ ok('「壁を動かす」を切ると元の位置に戻る', near(P[2], 0.02, 1e
 followWalls = true;
 wallParts = [];
 
+
+// --- 編集後の部屋の外に残った面を隠す ---------------------------------------
+restore(0);
+reindex();
+function fakePart(kind, wallId, pts, faces) {
+  var I = new Uint32Array(faces);
+  var g = { attributes: { position: { array: new Float32Array(pts) } },
+            index: { needsUpdate: false }, range: null,
+            setDrawRange: function (a, b) { this.range = [a, b]; } };
+  return { geo: g, idx: new Uint32Array(I), baseIdx: I, kind: kind,
+           wallId: wallId, clipped: false };
+}
+// 床に見立てた 5 枚。w1 を x=2.8347 へ寄せたとき、切る境界は壁の外面
+// 2.8347 + 0.12 = 2.9547。その前後と、壁の区間の外に 1 枚ずつ置く。
+var floorPts = [];
+[[0.5, 1.0], [2.50, 1.0], [2.90, 1.0], [3.05, 1.0], [3.05, 4.2]].forEach(function (q) {
+  floorPts.push(q[0], 0, q[1],  q[0] + 0.02, 0, q[1],  q[0], 0, q[1] + 0.02);
+});
+origWalls = plan.walls.map(function (w) {
+  var f = frameOf([w.a[0], w.a[1]], [w.b[0], w.b[1]]);
+  f.id = w.id; f.inSide = 1; return f;
+});
+allParts = [fakePart('room', null, floorPts,
+                     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])];
+followWalls = true;
+var R = allParts[0];
+
+drawPlan();
+ok('編集していなければ切らない', R.clipped === false && R.geo.range === null);
+
+// w1（x=3.1347 の壁）を内側へ 0.3m
+onWallDown(ev(3.1347, 1.0, 'w1'));
+onWallMove(ev(2.8347, 1.0, 'w1'));
+onWallUp();
+var kept = [];
+for (var i = 0; i < R.geo.range[1]; i += 3) kept.push(R.idx[i] / 3);
+ok('切ったことを覚えている', R.clipped === true);
+ok('室内の面は残る', kept.indexOf(0) >= 0 && kept.indexOf(1) >= 0, kept.join(','));
+// **境界は壁線ではなく壁の外面。** 壁線で切ると壁そのものが消える。
+ok('壁厚の内側（x=2.90）は残る', kept.indexOf(2) >= 0, kept.join(','));
+ok('壁の外（x=3.05）は消える', kept.indexOf(3) < 0, kept.join(','));
+// 壁の区間の外は切らない。L 字の部屋で延長線が室内を切らないため。
+ok('壁の区間の外（z=4.2）は切らない', kept.indexOf(4) >= 0, kept.join(','));
+ok('残ったのは 4 枚', R.geo.range[1] === 12, JSON.stringify(R.geo.range));
+
+// 自分の壁では切らない
+allParts.push(fakePart('wall', 'w1', [3.20, 1.0, 1.0,  3.25, 1.0, 1.0,  3.20, 1.0, 1.05],
+                       [0, 1, 2]));
+var WP = allParts[1];
+drawPlan();
+ok('その壁自身の部品は切らない', WP.geo.range === null || WP.geo.range[1] === 3,
+   JSON.stringify(WP.geo.range));
+
+// 家具は切らない
+allParts.push(fakePart('object', null, [3.20, 0.5, 1.0,  3.25, 0.5, 1.0,  3.20, 0.5, 1.05],
+                       [0, 1, 2]));
+var OB = allParts[2];
+drawPlan();
+ok('家具は切らない（貫通は採用済みの判断）',
+   OB.geo.range === null || OB.geo.range[1] === 3, JSON.stringify(OB.geo.range));
+
+// 元に戻せば索引も戻る
+restore(0);
+ok('取り消すと索引も戻る', R.geo.range[1] === 15 && R.clipped === false,
+   JSON.stringify(R.geo.range));
+
+followWalls = false;
+allParts = []; origWalls = []; wallParts = [];
+followWalls = true;
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');
