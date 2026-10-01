@@ -323,6 +323,7 @@ reindex();
 function fakeWall(id, a, b, pts) {
   var base = new Float32Array(pts);
   return { id: id, orig: frameOf(a, b), moved: false, base: base,
+           mesh: { visible: true },
            geo: { attributes: { position: { array: new Float32Array(base),
                                             needsUpdate: false } },
                   computeVertexNormals: function () {} } };
@@ -371,6 +372,33 @@ followWalls = false;
 drawPlan();
 ok('「壁を動かす」を切ると元の位置に戻る', near(P[2], 0.02, 1e-5), 'z=' + P[2]);
 followWalls = true;
+
+// --- 壁を消すと、撮った面も消える -------------------------------------------
+restore(0);
+reindex();
+drawPlan();
+ok('消す前は出ている', wallParts[0].mesh.visible === true);
+deleteWall('w3');
+ok('図面から消した壁は撮った面も消える', wallParts[0].mesh.visible === false);
+ok('ほかの壁は出たまま', wallParts[1].mesh.visible === true);
+ok('消えるのは表示だけで、元の形は残る',
+   near(wallParts[0].base[2], 0.02, 1e-9), wallParts[0].base[2]);
+// **取り消しの対象。** 図面の控えを戻せば面も戻る。
+restore(histAt - 1);
+ok('取り消すと撮った面も戻る', wallParts[0].mesh.visible === true);
+ok('戻った面は元の位置にある', near(P[2], 0.02, 1e-5), 'z=' + P[2]);
+deleteWall('w3');
+ok('やり直すとまた消える', wallParts[0].mesh.visible === false);
+// 「壁を動かす」を切れば、測ったままを見たいので出す
+followWalls = false;
+drawPlan();
+ok('追従を切ると消した壁も出る', wallParts[0].mesh.visible === true);
+followWalls = true;
+drawPlan();
+ok('戻すとまた消える', wallParts[0].mesh.visible === false);
+
+restore(0);
+ok('スキャン直後まで戻せば出る', wallParts[0].mesh.visible === true);
 wallParts = [];
 
 

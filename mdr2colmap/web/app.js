@@ -561,8 +561,9 @@ async function loadGeom(id) {
     geo.setAttribute('color', new THREE.BufferAttribute(dec(part.col, Uint8Array), 3, true));
     const idx = dec(part.idx, Uint32Array);
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    allParts.push({ geo, idx, baseIdx: idx.slice(), kind: part.kind,
-                    wallId: part.wall || null, clipped: false });
+    const entry = { geo, idx, baseIdx: idx.slice(), kind: part.kind,
+                    wallId: part.wall || null, clipped: false };
+    allParts.push(entry);
     if (part.kind === 'object') geo.translate(-part.c[0], 0, -part.c[2]);
     geo.computeVertexNormals();
     // **裏面を描かない。** ARKit のメッシュは法線が室内側を向くので、
@@ -571,8 +572,9 @@ async function loadGeom(id) {
     const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
       vertexColors: true, side: cullBack ? THREE.FrontSide : THREE.DoubleSide }));
     materials.push(mesh.material);
+    entry.mesh = mesh;
     if (part.kind === 'wall') {
-      wallParts.push({ id: part.wall, geo,
+      wallParts.push({ id: part.wall, geo, mesh,
                        base: geo.attributes.position.array.slice(),
                        orig: frameOf(part.a, part.b), moved: false });
     }
@@ -721,8 +723,12 @@ function frameOf(a, b) {
 function moveWalls() {
   if (!plan) return;
   for (const wp of wallParts) {
-    const w = followWalls ? plan.walls.find(v => v.id === wp.id) : null;
-    const t = w ? frameOf(w.a, w.b) : wp.orig;
+    const w = plan.walls.find(v => v.id === wp.id);
+    // **図面から消した壁は、撮った面も消す。** 消えるのは表示だけで、元の
+    // 形は base に残っているから、取り消しでそのまま戻る。
+    // 「壁を動かす」を切っているときは、測ったままを見たいので出す。
+    if (wp.mesh) wp.mesh.visible = !followWalls || !!w;
+    const t = (followWalls && w) ? frameOf(w.a, w.b) : wp.orig;
     const still = Math.abs(t.a[0] - wp.orig.a[0]) < 1e-6
                && Math.abs(t.a[1] - wp.orig.a[1]) < 1e-6
                && Math.abs(t.u[0] - wp.orig.u[0]) < 1e-6
@@ -771,6 +777,7 @@ function clipParts() {
     }
   }
   for (const p of allParts) {
+    if (p.mesh && !p.mesh.visible) continue;      // 消した壁は切る必要が無い
     // 家具は切らない（壁を貫くのは採用済みの判断）。自分の壁では切らない
     // ——壁の実体は自分の線より外にあるので、切れば丸ごと消える。
     const mine = p.kind === 'object' ? [] : cut.filter(c => c.id !== p.wallId);
