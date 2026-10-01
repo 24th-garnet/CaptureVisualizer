@@ -456,6 +456,7 @@ function drawPlan() {
     g.addEventListener('pointerup', onUp);
     g.addEventListener('pointercancel', onUp);
   });
+  placeSvg();
 }
 
 // --- 3D ---------------------------------------------------------------------
@@ -622,20 +623,33 @@ function objectAt(e) {
 }
 // --- 同期 -------------------------------------------------------------------
 
-function place() {
+/** 家具を平面図の上へ置く。
+
+    **drawPlan の最後から必ず呼ぶ。** drawPlan は .obj を transform 無しで作り
+    直すので、ここを通さないと家具がすべて SVG の原点へ寄る。位置を描画と別の
+    関数が持つ限り、描き直しのたびに呼び忘れる余地が残るため、呼ぶ側の作法に
+    しない。 */
+function placeSvg() {
   if (!plan) return;
   for (const o of (plan.objects || [])) {
-    const m = state.get(o.id);
-    const [sx, sy] = toScreen([o.c[0] + m.dx, o.c[1] + m.dz]);
+    const m = state.get(o.id) || { dx: 0, dz: 0, dyaw: 0 };
     const g = objNodes.get(o.id);
-    if (g) {
-      const rot = o.yaw - 90 - m.dyaw;
-      g.setAttribute('transform', `translate(${sx} ${sy}) rotate(${rot})`);
-      const lab = g.querySelector('.lab');
-      if (lab) lab.setAttribute('transform', `rotate(${-rot})`);
-      g.classList.toggle('moved', !!(m.dx || m.dz || m.dyaw));
-      g.classList.toggle('sel', sel === o.id);
-    }
+    if (!g) continue;
+    const [sx, sy] = toScreen([o.c[0] + m.dx, o.c[1] + m.dz]);
+    const rot = o.yaw - 90 - m.dyaw;
+    g.setAttribute('transform', `translate(${sx} ${sy}) rotate(${rot})`);
+    const lab = g.querySelector('.lab');
+    if (lab) lab.setAttribute('transform', `rotate(${-rot})`);
+    g.classList.toggle('moved', !!(m.dx || m.dz || m.dyaw));
+    g.classList.toggle('sel', sel === o.id);
+  }
+}
+
+function place() {
+  if (!plan) return;
+  placeSvg();
+  for (const o of (plan.objects || [])) {
+    const m = state.get(o.id) || { dx: 0, dz: 0, dyaw: 0 };
     const m3 = meshes.get(o.id);
     if (m3) {
       m3.mesh.position.set(m3.c[0] + m.dx, 0, m3.c[2] + m.dz);

@@ -237,4 +237,34 @@ onWallDown(ev(0, 0, 'w3'));
 onWallUp();
 ok('もう一度掴むと選択が外れる', selWall === null);
 
+
+// --- 家具が原点へ寄らないこと -----------------------------------------------
+// drawPlan は .obj を transform 無しで作り直す。描き直したあと位置を書き戻さ
+// ないと、家具がまとめて SVG の原点へ寄る（壁の選択で実際に起きた）。
+function furnT() {
+  var out = [];
+  objNodes.forEach(function (g) { out.push(g.attrs.transform); });
+  return out;
+}
+restore(0);
+reindex();
+var t0 = furnT();
+ok('家具に位置が入っている', t0.length === 1 && /^translate\(/.test(t0[0]), t0[0]);
+
+onWallDown(ev(0, 0, 'w3'));
+onWallUp();                                  // 動かさずに離す＝選択
+ok('壁を選んでも家具の位置が残る', furnT()[0] === t0[0], furnT()[0]);
+onWallDown(ev(0, 0, 'w3'));
+onWallUp();                                  // 選択を外す
+
+onNodeDown(ev(graph.nodes[0].x, graph.nodes[0].z, null, 0));
+ok('角を掴んだ時点でも家具の位置が残る', furnT()[0] === t0[0], furnT()[0]);
+onNodeUp();
+
+els['addWall'].onclick();                    // 壁の追加を待つ状態へ
+ok('壁の追加に入っても家具の位置が残る', furnT()[0] === t0[0], furnT()[0]);
+onAddPoint(ev(0, 1.5, 'x'));                 // 1 点目を置いた直後
+ok('1 点目を置いても家具の位置が残る', furnT()[0] === t0[0], furnT()[0]);
+adding = false; addFrom = null; drawPlan();
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');
