@@ -499,6 +499,9 @@ let fillMaps = {};           // 床・天井・壁の色（場所ごと。サー
 let fillTex = new Map();     // それを three.js の質感にしたもの
 let shellHeight = 2.4;
 let geomExtent = [1, 1];
+let placeholder = null;      // 編集で生まれた空間に出す無機的な絵
+const PLACEHOLDER = '\u0000placeholder';
+const PLACEHOLDER_TILE = 0.25;   // 絵の 1 升が何メートルか
 /* スキャンした壁を編集に追従させるための控え。
    **家具とまったく同じ扱い。** 壁は別の部品に切り出してあり、自分だけの
    頂点を持つ。だから剛体で動かしても床や天井を引き伸ばさず、継ぎ目はその
@@ -1066,6 +1069,34 @@ function applySkin(mat, hasUV) {
 
     床と天井は平面図の外形いっぱいの矩形で足りる。壁の外へはみ出すぶんは、
     同時に起こす壁の面が室内から隠す。凹んだ形の部屋でも三角形分割が要らない。 */
+/** 編集で生まれた空間に出す絵。
+
+    **撮れていない場所と、編集で生まれた場所は別物。** 前者は「そこに床は
+    あるが写していない」なので周りの色で塞ぐ。後者は「スキャン当時そこに
+    空間は無かった」なので、見るからに人工的な絵にして**編集の結果だと分かる
+    ようにする**。写真らしい色で埋めると、測ったものと区別が付かなくなる。 */
+function placeholderTexture() {
+  if (placeholder !== null) return placeholder;
+  const c = document.createElement('canvas');
+  if (!c || !c.getContext) { placeholder = false; return false; }
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  if (!x) { placeholder = false; return false; }
+  x.fillStyle = '#8e8b85';
+  x.fillRect(0, 0, 64, 64);
+  x.strokeStyle = '#7a776f';
+  x.lineWidth = 2;
+  for (let i = -64; i < 64; i += 8) {          // 斜めの縞
+    x.beginPath(); x.moveTo(i, 0); x.lineTo(i + 64, 64); x.stroke();
+  }
+  x.strokeStyle = '#6e6b64';
+  x.lineWidth = 1;
+  x.strokeRect(0.5, 0.5, 63, 63);              // 升目の枠
+  placeholder = new THREE.CanvasTexture(c);
+  placeholder.wrapS = placeholder.wrapT = THREE.RepeatWrapping;
+  return placeholder;
+}
+
 /** 隙間を塞ぐ面に貼る色。**一色ではなく場所ごとに持つ。**
     一色だと、茶色のカーテンの穴に壁全体のベージュが出る。 */
 function fillTexture(key) {
@@ -1111,20 +1142,32 @@ function buildShell() {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(t, 2));
     geo.computeVertexNormals();
-    const map = fillTexture(key);
+    let map = key === PLACEHOLDER ? placeholderTexture() : fillTexture(key);
+    if (map === false) map = null;
     g.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      map, color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(0.6, 0.59, 0.55),
+      map, color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(0.56, 0.55, 0.52),
       side: cullBack ? THREE.FrontSide : THREE.DoubleSide })));
   };
 
   const M = 0.5;                                   // 壁の外へ少し出す
   // 色の格子はスキャン当時の枠で作ってあるので、UV もその枠で引く。
   const uvOf = p => [p[0] / geomExtent[0], p[2] / geomExtent[1]];
-  const flat = y => [[x0 - M, y, z0 - M], [x1 + M, y, z0 - M],
-                     [x1 + M, y, z1 + M], [x0 - M, y, z1 + M]];
-  // 床はスキャン（実測で +0.0155m）より下、天井はその上に置く。
-  quad(flat(-0.02), flat(-0.02).map(uvOf), [0, 1, 0], 'floor');
-  quad(flat(H + 0.02), flat(H + 0.02).map(uvOf), [0, -1, 0], 'ceiling');
+  const rect = (y, ax, az, bx, bz) =>
+    [[ax, y, az], [bx, y, az], [bx, y, bz], [ax, y, bz]];
+  const R = 1 / PLACEHOLDER_TILE;
+  const tile = p => [p[0] * R, p[2] * R];
+
+  // **スキャン当時の広さと、いまの広さを分けて敷く。**
+  // 編集で広がったぶんは、下に敷いた無機的な絵が見える。
+  const pf = rect(-0.03, x0 - M, z0 - M, x1 + M, z1 + M);
+  quad(pf, pf.map(tile), [0, 1, 0], PLACEHOLDER);
+  const pc = rect(H + 0.03, x0 - M, z0 - M, x1 + M, z1 + M);
+  quad(pc, pc.map(tile), [0, -1, 0], PLACEHOLDER);
+  // 色の格子を貼る面は、スキャン当時の広さに収める。
+  const sf = rect(-0.02, 0, 0, geomExtent[0], geomExtent[1]);
+  quad(sf, sf.map(uvOf), [0, 1, 0], 'floor');
+  const sc = rect(H + 0.02, 0, 0, geomExtent[0], geomExtent[1]);
+  quad(sc, sc.map(uvOf), [0, -1, 0], 'ceiling');
 
   for (const w of plan.walls) {
     const f = frameOf(w.a, w.b);
@@ -1136,10 +1179,16 @@ function buildShell() {
     const a = [f.a[0] + f.n[0] * d, f.a[1] + f.n[1] * d];
     const b = [a[0] + f.u[0] * f.L, a[1] + f.u[1] * f.L];
     const hh = w.height || H;
+    // **足した壁には色の格子が無い。** スキャン当時そこに壁は無かったので、
+    // 無機的な絵にして編集の結果だと分かるようにする。
+    const added = !fillMaps[w.id];
     const vt = hh / shellHeight;
+    const uv = added
+      ? [[0, 0], [f.L / PLACEHOLDER_TILE, 0],
+         [f.L / PLACEHOLDER_TILE, hh / PLACEHOLDER_TILE], [0, hh / PLACEHOLDER_TILE]]
+      : [[0, 0], [1, 0], [1, vt], [0, vt]];
     quad([[a[0], 0, a[1]], [b[0], 0, b[1]], [b[0], hh, b[1]], [a[0], hh, a[1]]],
-         [[0, 0], [1, 0], [1, vt], [0, vt]],
-         [f.n[0] * side, 0, f.n[1] * side], w.id);
+         uv, [f.n[0] * side, 0, f.n[1] * side], added ? PLACEHOLDER : w.id);
   }
   shell = g;
   scene.add(g);

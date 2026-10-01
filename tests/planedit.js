@@ -603,16 +603,33 @@ THREE = {
   Color: function (r, gg, b) { this.r = r; this.g = gg; this.b = b; },
   DataTexture: function (d, w, h) { this.d = d; this.w = w; this.h = h;
                                     this.dispose = function () {}; },
-  FrontSide: 0, DoubleSide: 2, LinearFilter: 1, ClampToEdgeWrapping: 1, RGBFormat: 1
+  CanvasTexture: function (c) { this.canvas = c; this.dispose = function () {}; },
+  FrontSide: 0, DoubleSide: 2, LinearFilter: 1, ClampToEdgeWrapping: 1,
+  RepeatWrapping: 2, RGBFormat: 1
+};
+// 絵を描く器。中身は使わないので受け取るだけ。
+document.createElement = function (tag) {
+  var n = new Node(tag);
+  if (tag === 'canvas') n.getContext = function () {
+    return { fillRect: function () {}, strokeRect: function () {},
+             beginPath: function () {}, moveTo: function () {},
+             lineTo: function () {}, stroke: function () {} };
+  };
+  return n;
 };
 renderer = {}; scene = { add: function () {}, remove: function () {} };
 origWalls = plan.walls.map(function (w) {
   var f = frameOf(w.a, w.b); f.id = w.id; f.inSide = 1; return f;
 });
-fillMaps = {}; fillTex = new Map(); shellHeight = 2.408; geomExtent = [3.1347, 3.5754];
+// 色の格子は床・天井・壁 4 枚ぶんある状態にする
+fillMaps = { floor: { w: 4, h: 4, data: 'AAAA' }, ceiling: { w: 4, h: 4, data: 'AAAA' } };
+plan.walls.forEach(function (w) { fillMaps[w.id] = { w: 4, h: 4, data: 'AAAA' }; });
+fillTex = new Map(); shellHeight = 2.408; geomExtent = [3.1347, 3.5754];
+placeholder = null;
 showShell = true; cullBack = true; shell = null;
 buildShell();
-ok('床・天井・壁ぶんの面ができる', made.length === 2 + plan.walls.length,
+// スキャン当時の広さ（床・天井）＋編集後の広さ（下敷き）＋壁
+ok('床・天井・下敷き・壁ぶんの面ができる', made.length === 4 + plan.walls.length,
    'n=' + made.length);
 
 function tri(m, i) {                      // i 枚目の三角形の 3 頂点
@@ -625,26 +642,37 @@ function normal(t) {
   var e2 = [t[2][0]-t[0][0], t[2][1]-t[0][1], t[2][2]-t[0][2]];
   return [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
 }
-var flo = made[0], cei = made[1];
+var pfl = made[0], pce = made[1], flo = made[2], cei = made[3];
+ok('下敷きは無機的な絵', pfl.m.o.map && pfl.m.o.map.canvas);
+ok('下敷きは色の格子の面より下', tri(pfl,0)[0][1] < tri(flo,0)[0][1],
+   tri(pfl,0)[0][1] + ' vs ' + tri(flo,0)[0][1]);
+ok('色の格子はスキャン当時の広さに収まる', (function () {
+  var t = tri(flo,0).concat(tri(flo,1));
+  var xs = t.map(function (p) { return p[0]; });
+  return near(Math.min.apply(null, xs), 0)
+      && near(Math.max.apply(null, xs), geomExtent[0]);
+})());
+ok('下敷きは編集後の広さまで届く', (function () {
+  var t = tri(pfl,0).concat(tri(pfl,1));
+  return Math.max.apply(null, t.map(function (p) { return p[0]; })) > geomExtent[0];
+})());
 ok('床は上を向く', normal(tri(flo,0))[1] > 0 && normal(tri(flo,1))[1] > 0);
 ok('天井は下を向く', normal(tri(cei,0))[1] < 0 && normal(tri(cei,1))[1] < 0);
 // スキャンの床は実測で +0.0155m。塞ぐ面はその下でなければ手前に出てしまう。
 ok('床はスキャンより下', tri(flo,0)[0][1] < 0, 'y=' + tri(flo,0)[0][1]);
 ok('天井はスキャンより上', tri(cei,0)[0][1] > 2.408, 'y=' + tri(cei,0)[0][1]);
-// 色の格子が無いときは一色で逃がす
-ok('格子が無ければ一色', flo.m.o.map === null && flo.m.o.color.r === 0.6);
 // UV は面の向きを直したときも一緒に並べ替わる
 ok('床に UV が付く', flo.g.attrs.uv && flo.g.attrs.uv.array.length === 12);
-ok('床の UV は枠いっぱい', (function () {
-  var u = flo.g.attrs.uv.array, mx = 0;
-  for (var i = 0; i < u.length; i++) mx = Math.max(mx, u[i]);
-  return mx > 1.0;                               // 余白ぶん 1 を超える
-})());
+ok('床の UV はちょうど 0〜1', (function () {
+  var u = flo.g.attrs.uv.array, mn = 9, mx = -9;
+  for (var i = 0; i < u.length; i++) { mn = Math.min(mn, u[i]); mx = Math.max(mx, u[i]); }
+  return near(mn, 0) && near(mx, 1);
+})(), flo.g.attrs.uv.array.join(','));
 
 // 壁は室内を向き、スキャンした面より外になければならない
 var okdir = true, okout = true;
 for (var i = 0; i < plan.walls.length; i++) {
-  var w = plan.walls[i], f = frameOf(w.a, w.b), m = made[2 + i];
+  var w = plan.walls[i], f = frameOf(w.a, w.b), m = made[4 + i];
   var n = normal(tri(m, 0));
   // 室内向き（inSide=+1 なので f.n の向き）
   if (n[0] * f.n[0] + n[2] * f.n[1] <= 0) okdir = false;
@@ -655,30 +683,42 @@ for (var i = 0; i < plan.walls.length; i++) {
 ok('壁は室内を向く', okdir);
 ok('壁はスキャンした面より外にある', okout);
 ok('壁の UV は端から端へ', (function () {
-  var u = made[2].g.attrs.uv.array, us = [], vs = [];
+  var u = made[4].g.attrs.uv.array, us = [], vs = [];
   for (var i = 0; i < u.length; i += 2) { us.push(u[i]); vs.push(u[i+1]); }
   return near(Math.min.apply(null, us), 0) && near(Math.max.apply(null, us), 1)
       && near(Math.min.apply(null, vs), 0) && Math.max.apply(null, vs) > 0.99;
-})(), made[2].g.attrs.uv.array.join(','));
-ok('UV は頂点と同じ数', made[2].g.attrs.uv.array.length / 2
-   === made[2].g.attrs.position.array.length / 3);
+})(), made[4].g.attrs.uv.array.join(','));
+ok('UV は頂点と同じ数', made[4].g.attrs.uv.array.length / 2
+   === made[4].g.attrs.position.array.length / 3);
 ok('壁は床から天井まで', (function () {
-  var t0 = tri(made[2], 0), t1 = tri(made[2], 1);
+  var t0 = tri(made[4], 0), t1 = tri(made[4], 1);
   var ys = t0.concat(t1).map(function (p) { return p[1]; });
   return near(Math.min.apply(null, ys), 0) && Math.max.apply(null, ys) > 2.3;
 })());
 
-// 色の格子があれば貼る
-made = [];
-fillMaps = { floor: { w: 4, h: 4, data: 'AAAA' },
-             w0: { w: 3, h: 2, data: 'AAAA' } };
-fillTex = new Map();
-buildShell();
-ok('格子があれば質感を貼る', made[0].m.o.map !== null && made[0].m.o.map.w === 4);
-ok('格子があるぶんだけ白で乗せる', made[0].m.o.color.r === 1);
-ok('格子の無い面は一色のまま', made[1].m.o.map === null);
-ok('質感は使い回す', fillTex.get('floor') === made[0].m.o.map);
-fillMaps = {}; fillTex = new Map();
+ok('格子があれば質感を貼る', flo.m.o.map !== null && flo.m.o.map.w === 4);
+ok('格子があるぶんだけ白で乗せる', flo.m.o.color.r === 1);
+ok('質感は使い回す', fillTex.get('floor') === flo.m.o.map);
+
+// **足した壁には格子が無い。** そこは無機的な絵になる。
+// （drawPlan 経由でも作られるので、見るのは shell の中身のほう）
+addWall([0.5, 0.5], [2.5, 0.5]);
+var kids = shell.children;
+var am = kids[kids.length - 1];              // 最後に足した壁
+ok('足した壁は無機的な絵', am.material.o.map && am.material.o.map.canvas,
+   plan.walls[plan.walls.length - 1].id);
+ok('絵は実寸で並べる（0.25m ごと）', (function () {
+  var u = am.geometry.attrs.uv.array, mx = 0;
+  for (var i = 0; i < u.length; i += 2) mx = Math.max(mx, u[i]);
+  return near(mx, 2.0 / PLACEHOLDER_TILE, 1e-3);
+})(), am.geometry.attrs.uv.array.join(','));
+ok('元からの壁は色の格子のまま', kids[4].material.o.map
+   && kids[4].material.o.map.w === 4);
+restore(0); reindex();
+
+// 格子がまったく無ければ一色で逃がす
+made = []; fillMaps = {}; fillTex = new Map(); buildShell();
+ok('格子が無ければ一色', made[2].m.o.map === null && near(made[2].m.o.color.r, 0.56));
 
 // 切ると作らない
 made = []; showShell = false; buildShell();
@@ -688,10 +728,10 @@ showShell = true;
 // 壁を消したらその面も消える
 // （drawPlan 経由でも作られるので、数えるのは shell の中身のほう）
 deleteWall('w3');
-ok('消した壁は塞がない', shell.children.length === 2 + plan.walls.length,
+ok('消した壁は塞がない', shell.children.length === 4 + plan.walls.length,
    shell.children.length + ' / 壁 ' + plan.walls.length);
 restore(0);
-ok('戻すとまた塞ぐ', shell.children.length === 2 + plan.walls.length,
+ok('戻すとまた塞ぐ', shell.children.length === 4 + plan.walls.length,
    shell.children.length + ' / 壁 ' + plan.walls.length);
 
 THREE = undefined; renderer = null; scene = null; shell = null;
