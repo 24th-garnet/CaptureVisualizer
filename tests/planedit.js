@@ -471,4 +471,87 @@ followWalls = false;
 allParts = []; origWalls = []; wallParts = [];
 followWalls = true;
 
+
+// --- 歩き回る ---------------------------------------------------------------
+// three.js は読めないので、光線だけ差し替えて当たり判定の筋を確かめる。
+restore(0);
+reindex();
+var rayHits = function () { return []; };
+var lastRay = null;
+THREE = {
+  Raycaster: function () {
+    this.far = 0;
+    this.set = function (o, d) { this.o = o; this.d = d; lastRay = this; };
+    this.intersectObjects = function () { return rayHits(this.o, this.d, this.far); };
+  },
+  Vector3: function (x, y, z) { this.x = x; this.y = y; this.z = z; }
+};
+_walkRay = null;
+allParts = [{ mesh: { visible: true } }];
+walkMark = null;
+walkCam = { position: { set: function (x, y, z) { this.x = x; this.y = y; this.z = z; } },
+            rotation: { set: function (x, y, z) { this.x = x; this.y = y; this.z = z; } } };
+
+// 立ち位置は壁からも家具からも離れる
+var sp = walkSpawn();
+var dWall = Infinity;
+plan.walls.forEach(function (w) {
+  var f = frameOf(w.a, w.b);
+  var qx = sp.x - f.a[0], qz = sp.z - f.a[1];
+  var t = Math.max(0, Math.min(f.L, qx * f.u[0] + qz * f.u[1]));
+  dWall = Math.min(dWall, Math.hypot(sp.x - (f.a[0] + f.u[0] * t),
+                                     sp.z - (f.a[1] + f.u[1] * t)));
+});
+ok('立ち位置は壁から離れる', dWall > WALK_RADIUS, 'd=' + dWall.toFixed(3));
+var inObj = (plan.objects || []).some(function (o) {
+  return Math.abs(sp.x - o.c[0]) < o.w / 2 && Math.abs(sp.z - o.c[1]) < o.d / 2;
+});
+ok('立ち位置は家具の中でない', !inObj, JSON.stringify([sp.x.toFixed(2), sp.z.toFixed(2)]));
+
+// 床。**当たらなければ Y=0。** 撮れていない床（この部屋で 32%）で落ちないため。
+walkPos = { x: 1, y: 0, z: 1 };
+rayHits = function () { return []; };
+ok('床に当たらなければ Y=0', walkGround(1, 1) === 0);
+rayHits = function () { return [{ point: { y: 0.15 } }]; };
+ok('当たればその高さ', near(walkGround(1, 1), 0.15));
+rayHits = function () { return [{ point: { y: 0.9 } }]; };
+ok('登れない高さは床にしない', walkGround(1, 1) === 0, String(walkGround(1, 1)));
+rayHits = function () { return [{ point: { y: 0.1 } }, { point: { y: 0.3 } }]; };
+ok('届く中で一番高いところに立つ', near(walkGround(1, 1), 0.3));
+
+// 前方の当たり
+rayHits = function () { return []; };
+ok('何も無ければ進める', walkBlocked(1, 1, 0.1, 0) === false);
+rayHits = function () { return [{ distance: 0.2 }]; };
+ok('近くに面があれば止まる', walkBlocked(1, 1, 0.1, 0) === true);
+rayHits = function () { return [{ distance: 1.0 }]; };
+ok('遠い面では止まらない', walkBlocked(1, 1, 0.1, 0) === false);
+ok('体の半径ぶん手前で止まる', (function () {
+  rayHits = function () { return [{ distance: 0.1 + WALK_RADIUS - 0.01 }]; };
+  return walkBlocked(1, 1, 0.1, 0) === true;
+})());
+
+// **軸ごとに試す。** まとめて止めると壁に沿って滑れない。
+walkPos = { x: 1, y: 0, z: 1 };
+walkYaw = Math.PI / 4;                       // 斜め前（x も z も正）
+walkKeys.clear(); walkKeys.add('f');
+rayHits = function (o, d) {
+  // x 方向にだけ壁がある
+  return Math.abs(d.x) > 1e-6 ? [{ distance: 0.01 }] : [];
+};
+var before = { x: walkPos.x, z: walkPos.z };
+walkStep(0.1);
+ok('塞がれた軸は進まない', near(walkPos.x, before.x, 1e-9), 'x=' + walkPos.x);
+ok('空いている軸は進む', walkPos.z > before.z + 1e-4, 'z=' + walkPos.z);
+ok('目の高さは床から WALK_EYE', near(walkCam.position.y, WALK_EYE, 1e-9));
+
+// 向きの反映
+walkYaw = 0; walkPitch = 0.2;
+walkKeys.clear();
+walkStep(0.1);
+ok('見上げた角度が入る', near(walkCam.rotation.x, 0.2) && near(walkCam.rotation.y, 0));
+
+walkKeys.clear();
+allParts = []; walkCam = null; THREE = undefined; _walkRay = null;
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

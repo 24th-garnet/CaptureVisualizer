@@ -445,6 +445,16 @@ function drawPlan() {
     }
   }
 
+  if (walking) {
+    // 立ち位置。図面の記号ではないので、編集のつまみと同じく操作の層に置く。
+    walkMark = el('g', { class: 'walkmark' });
+    el('circle', { cx: 0, cy: 0, r: 0.09 }, walkMark);
+    el('path', { d: 'M 0 -0.09 L 0 -0.34 M -0.08 -0.24 L 0 -0.34 L 0.08 -0.24' },
+       walkMark);
+  } else {
+    walkMark = null;
+  }
+
   const y = sy1 + M * 0.45;
   el('path', { class: 'scalebar',
     d: `M 0 ${y} H 1 M 0 ${y - .06} V ${y + .06} M 1 ${y - .06} V ${y + .06}` });
@@ -463,6 +473,25 @@ function drawPlan() {
 }
 
 // --- 3D ---------------------------------------------------------------------
+
+/* 歩き回る。
+   FloorplanStudio の walkthrough を下敷きにしているが、重力と跳躍は持たない。
+   **この床は 67.7% しか撮れていない**（ベッドの下は 7%）ので、落下に任せると
+   穴から抜ける。代わりに床の高さへ吸い付かせる。webgeom が床を Y=0 に揃えて
+   いるので、光線が当たらなければ 0 を床とみなせる——測って分かっている値を
+   使えるぶん、落下より確かになる。 */
+const WALK_EYE = 1.6;        // 目の高さ（m）
+const WALK_SPEED = 1.4;      // 歩く速さ（m/秒）
+const WALK_RADIUS = 0.3;     // 体の半径。壁へのめり込みを止める
+const WALK_STEP_UP = 0.4;    // 登れる段差
+const WALK_PROBE = [0.35, 1.0, 1.45];   // 当たりを見る高さ
+let walking = false;
+let walkCam = null, walkMark = null;
+let walkPos = { x: 0, y: 0, z: 0 };     // 足元
+let walkYaw = 0, walkPitch = 0, walkLast = 0;
+const walkKeys = new Set();
+let _walkRay = null;
+const walkRay = () => (_walkRay || (_walkRay = new THREE.Raycaster()));
 
 let overlay = null;          // 編集後の壁を立体にしたもの（図面の側）
 let showOverlay = true;
@@ -509,6 +538,7 @@ function initGL() {
   // 見ている数値と食い違う。鉛直方向の移動も持たない（家具は床に
   // 置いたままとする）。
   canvas.addEventListener('pointerdown', e => {
+    if (walking) return;                      // 歩いている間は視点を掴まない
     canvas.setPointerCapture(e.pointerId);
     orbit = { x: e.clientX, y: e.clientY, t: cam.theta, p: cam.phi, moved: false };
   });
@@ -521,11 +551,13 @@ function initGL() {
     draw();
   });
   canvas.addEventListener('pointerup', e => {
+    if (walking) return;
     if (orbit && !orbit.moved) { sel = objectAt(e); place(); }
     orbit = null;
   });
   canvas.addEventListener('pointercancel', () => { orbit = null; });
   canvas.addEventListener('wheel', e => {
+    if (walking) return;
     e.preventDefault(); cam.r *= Math.exp(e.deltaY * 0.0012); draw();
   }, { passive: false });
   loop();
@@ -590,6 +622,7 @@ async function loadGeom(id) {
   target.set(g.extent[0] / 2, 1.2, g.extent[1] / 2);
   cam.r = Math.max(6, Math.hypot(g.extent[0], g.extent[1]) * 0.9);
   document.getElementById('gl-note').hidden = true;
+  document.getElementById('walk').disabled = false;
   updateOverlay();                            // initGL の後でないと作れない
   moveWalls();
   clipParts();
@@ -600,12 +633,20 @@ function resizeGL() {
   if (!renderer) return;
   const r = canvas.parentElement.getBoundingClientRect();
   renderer.setSize(r.width, r.height, false);
-  camera.aspect = r.width / Math.max(r.height, 1);
+  const aspect = r.width / Math.max(r.height, 1);
+  camera.aspect = aspect;
   camera.updateProjectionMatrix();
+  if (walkCam) { walkCam.aspect = aspect; walkCam.updateProjectionMatrix(); }
 }
 const draw = () => { needs = true; };
 function loop() {
-  if (needs && renderer && target) {
+  if (walking && renderer && walkCam) {
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - walkLast) / 1000);
+    walkLast = now;
+    walkStep(dt);
+    renderer.render(scene, walkCam);
+  } else if (needs && renderer && target) {
     needs = false;
     cam.phi = Math.max(0.12, Math.min(Math.PI / 2 - 0.02, cam.phi));
     cam.r = Math.max(1.5, Math.min(90, cam.r));
@@ -811,6 +852,158 @@ function clipParts() {
     p.clipped = true;
   }
 }
+
+// --- 歩き回る -----------------------------------------------------------
+
+/** 当たり判定に使うメッシュ。**見えているものだけ。**
+    消した壁は見えないので通り抜けられる。編集した結果の中を歩ける。 */
+function walkTargets() {
+  return allParts.filter(p => p.mesh && p.mesh.visible).map(p => p.mesh);
+}
+
+/** 立ち位置を決める。**家具と壁から最も離れた場所。**
+    部屋の中心は家具の中のことがある（実測でベッドが中心寄りだった）。
+    平面図に箱があるので、光線を飛ばさずに空いている場所を選べる。 */
+function walkSpawn() {
+  const [x0, x1, z0, z1] = planBounds();
+  let best = null, bestD = -1;
+  const N = 24;
+  for (let i = 1; i < N; i++) {
+    for (let j = 1; j < N; j++) {
+      const x = x0 + (x1 - x0) * i / N, z = z0 + (z1 - z0) * j / N;
+      let d = Infinity;
+      for (const w of plan.walls) {
+        const f = frameOf(w.a, w.b);
+        const qx = x - f.a[0], qz = z - f.a[1];
+        const sv = Math.max(0, Math.min(f.L, qx * f.u[0] + qz * f.u[1]));
+        d = Math.min(d, Math.hypot(x - (f.a[0] + f.u[0] * sv),
+                                   z - (f.a[1] + f.u[1] * sv)));
+      }
+      for (const o of (plan.objects || [])) {
+        const m = state.get(o.id) || { dx: 0, dz: 0 };
+        const cx = o.c[0] + m.dx, cz = o.c[1] + m.dz;
+        d = Math.min(d, Math.max(0, Math.hypot(x - cx, z - cz)
+                                    - Math.max(o.w, o.d) / 2));
+      }
+      if (d > bestD) { bestD = d; best = [x, z]; }
+    }
+  }
+  const yaw = (x1 - x0) >= (z1 - z0) ? Math.PI / 2 : 0;  // 長辺へ向く
+  return { x: best[0], z: best[1], yaw };
+}
+
+/** 足元の床。光線が当たらなければ Y=0（webgeom が揃えた床面）。 */
+function walkGround(x, z) {
+  const t = walkTargets();
+  if (t.length) {
+    walkRay().set(new THREE.Vector3(x, walkPos.y + 0.6, z), new THREE.Vector3(0, -1, 0));
+    walkRay().far = 3;
+    let g = null;
+    for (const h of walkRay().intersectObjects(t, false)) {
+      const y = h.point.y;
+      if (y > walkPos.y + WALK_STEP_UP) continue;   // 登れない高さは床でない
+      g = g === null ? y : Math.max(g, y);
+    }
+    if (g !== null) return g;
+  }
+  return 0;
+}
+
+/** その向きへ進めるか。腰・胸・頭の高さで見る。 */
+function walkBlocked(x, z, dx, dz) {
+  const t = walkTargets();
+  if (!t.length) return false;
+  const d = Math.hypot(dx, dz);
+  if (d < 1e-9) return false;
+  const dir = new THREE.Vector3(dx / d, 0, dz / d);
+  for (const h of WALK_PROBE) {
+    walkRay().set(new THREE.Vector3(x, walkPos.y + h, z), dir);
+    walkRay().far = d + WALK_RADIUS;
+    const hits = walkRay().intersectObjects(t, false);
+    if (hits.length && hits[0].distance < d + WALK_RADIUS) return true;
+  }
+  return false;
+}
+
+function walkStep(dt) {
+  const f = [Math.sin(walkYaw), Math.cos(walkYaw)];     // 前（x, z）
+  const r = [f[1], -f[0]];                              // 右
+  let wx = 0, wz = 0;
+  if (walkKeys.has('f')) { wx += f[0]; wz += f[1]; }
+  if (walkKeys.has('b')) { wx -= f[0]; wz -= f[1]; }
+  if (walkKeys.has('r')) { wx += r[0]; wz += r[1]; }
+  if (walkKeys.has('l')) { wx -= r[0]; wz -= r[1]; }
+  const n = Math.hypot(wx, wz);
+  if (n > 0) {
+    const k = WALK_SPEED * dt / n;
+    // **軸ごとに試す。** まとめて止めると壁に沿って滑れず、角で動けなくなる。
+    if (!walkBlocked(walkPos.x, walkPos.z, wx * k, 0)) walkPos.x += wx * k;
+    if (!walkBlocked(walkPos.x, walkPos.z, 0, wz * k)) walkPos.z += wz * k;
+  }
+  walkPos.y = walkGround(walkPos.x, walkPos.z);
+  walkCam.position.set(walkPos.x, walkPos.y + WALK_EYE, walkPos.z);
+  walkCam.rotation.set(walkPitch, walkYaw, 0, 'YXZ');
+  if (walkMark) {
+    const [sx, sy] = toScreen([walkPos.x, walkPos.z]);
+    // 画面は (x,z)→(z, LX−x) に写しているので、向きも同じ写し方で回す。
+    walkMark.setAttribute('transform',
+      `translate(${sx} ${sy}) rotate(${-walkYaw * 180 / Math.PI})`);
+  }
+}
+
+function enterWalk() {
+  if (!renderer || !plan || walking) return;
+  if (!walkCam) walkCam = new THREE.PerspectiveCamera(75, 1, 0.03, 100);
+  const sp = walkSpawn();
+  walkPos = { x: sp.x, y: 0, z: sp.z };
+  walkYaw = sp.yaw; walkPitch = 0;
+  walking = true;
+  walkKeys.clear();
+  walkLast = performance.now();
+  document.getElementById('stage3d').classList.add('walking');
+  document.getElementById('walkhud').hidden = false;
+  document.getElementById('walk').textContent = '戻る';
+  resizeGL();
+  drawPlan();                               // 立ち位置の印を出す
+  canvas.requestPointerLock && canvas.requestPointerLock();
+}
+
+function exitWalk() {
+  if (!walking) return;
+  walking = false;
+  walkKeys.clear();
+  document.getElementById('stage3d').classList.remove('walking');
+  document.getElementById('walkhud').hidden = true;
+  document.getElementById('walk').textContent = '歩く';
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  resizeGL();
+  drawPlan();
+  draw();
+}
+
+document.addEventListener('pointerlockchange', () => {
+  // Esc で外れたら歩くのをやめる。掴んだままにすると操作不能になる。
+  if (walking && document.pointerLockElement !== canvas) exitWalk();
+});
+document.addEventListener('mousemove', e => {
+  if (!walking || document.pointerLockElement !== canvas) return;
+  walkYaw -= e.movementX * 0.0022;
+  walkPitch -= e.movementY * 0.0022;
+  const lim = Math.PI / 2 - 0.05;
+  walkPitch = Math.max(-lim, Math.min(lim, walkPitch));
+});
+const WALK_KEYMAP = { KeyW: 'f', ArrowUp: 'f', KeyS: 'b', ArrowDown: 'b',
+                      KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r' };
+window.addEventListener('keydown', e => {
+  if (!walking) return;
+  const k = WALK_KEYMAP[e.code];
+  if (k) { walkKeys.add(k); e.preventDefault(); }
+  else if (e.key === 'Escape') exitWalk();
+});
+window.addEventListener('keyup', e => {
+  const k = WALK_KEYMAP[e.code];
+  if (k) walkKeys.delete(k);
+});
 
 function addBox(part) {
   const b = part.box, pts = b.pts, y0 = b.y0, y1 = b.y0 + b.h, v = [];
@@ -1055,7 +1248,7 @@ function onAddPoint(e) {
 }
 
 window.addEventListener('keydown', e => {
-  if (!sel || !plan) return;
+  if (walking || !sel || !plan) return;
   const m = state.get(sel), step = e.shiftKey ? 0.01 : 0.05;
   const map = { ArrowUp: [step, 0], ArrowDown: [-step, 0],
                 ArrowLeft: [0, -step], ArrowRight: [0, step] };
@@ -1093,6 +1286,7 @@ document.getElementById('follow').onchange = e => {
   moveWalls(); clipParts(); draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
+document.getElementById('walk').onclick = () => (walking ? exitWalk() : enterWalk());
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };
 document.getElementById('reload').onclick = loadList;
 

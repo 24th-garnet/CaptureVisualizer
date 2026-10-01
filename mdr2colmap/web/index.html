@@ -65,10 +65,15 @@
               <label><input type="checkbox" id="follow" checked> 壁を動かす</label>
               <button id="vTop">上から</button>
               <button id="vIso">斜め</button>
+              <button id="walk" disabled>歩く</button>
             </span>
           </div>
-          <div class="stage view"><canvas id="gl"></canvas>
-            <p class="loading" id="gl-note" hidden></p></div>
+          <div class="stage view" id="stage3d"><canvas id="gl"></canvas>
+            <p class="loading" id="gl-note" hidden></p>
+            <div class="walkhud" id="walkhud" hidden>
+              <span class="cross"></span>
+              <p>W A S D / 矢印で移動　マウスで見回す　Esc で戻る</p>
+            </div></div>
         </section>
       </div>
 

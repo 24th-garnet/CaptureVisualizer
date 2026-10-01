@@ -72,6 +72,19 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .stage { height: 420px; position: relative; touch-action: none; }
 .stage.view { background: var(--stage3d); }
 .stage svg, .stage canvas { display: block; width: 100%; height: 100%; }
+/* 歩くとき。狭い枠では向きを見失うので、画面を広げて十字を出す。 */
+.stage.walking { height: 72vh; cursor: none; }
+.walkhud { position: absolute; inset: 0; pointer-events: none; }
+.walkhud .cross { position: absolute; left: 50%; top: 50%; width: 14px; height: 14px;
+                  margin: -7px 0 0 -7px; border: 1px solid var(--paper);
+                  border-radius: 50%; opacity: .55; mix-blend-mode: difference; }
+.walkhud p { position: absolute; left: 0; right: 0; bottom: 10px; margin: 0;
+             text-align: center; font-family: var(--mono); font-size: 11.5px;
+             color: var(--faint); }
+/* 平面図に出す立ち位置。図面の記号ではないので編集のつまみと同じ扱い。 */
+.walkmark circle { fill: var(--moved); fill-opacity: .9; }
+.walkmark path { fill: none; stroke: var(--moved); stroke-width: 0.02; }
+
 .loading { position: absolute; inset: 0; display: flex; align-items: center;
            justify-content: center; margin: 0; color: var(--faint);
            font-family: var(--mono); font-size: 12px; pointer-events: none; }
