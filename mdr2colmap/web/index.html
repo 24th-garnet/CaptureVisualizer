@@ -45,6 +45,14 @@
               <span class="muted" id="plan-source"></span>
             </span>
           </div>
+          <div class="editbar" id="editbar" hidden>
+            <label>内法 W <input id="dimW" type="number" step="50" min="300"> mm</label>
+            <label>D <input id="dimD" type="number" step="50" min="300"> mm</label>
+            <span class="spacer"></span>
+            <button id="addWall">壁を追加</button>
+            <button id="delWall" disabled>壁を削除</button>
+            <span class="muted" id="wallinfo"></span>
+          </div>
           <div class="stage"><svg id="plan"></svg></div>
         </section>
         <section class="pane">

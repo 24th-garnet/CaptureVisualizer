@@ -169,4 +169,65 @@ var h2 = 0;
 })(els['plan']);
 ok('編集を閉じるとつまみが消える', h2 === 0, 'h2=' + h2);
 
+
+// --- 内法の数値入力 ---------------------------------------------------------
+els['editmode'].onchange({ target: { checked: true } });
+restore(0);
+reindex();
+var b0 = planBounds();
+ok('内法 W は 3135', Math.round((b0[1] - b0[0]) * 1000) === 3135,
+   JSON.stringify(b0));
+els['dimW'].onchange({ target: { value: 3000 } });
+reindex();
+var b1 = planBounds();
+ok('W を 3000 にすると外形が 3000 になる',
+   Math.round((b1[1] - b1[0]) * 1000) === 3000, JSON.stringify(b1));
+ok('近い側の辺は動かない', near(b1[0], b0[0]), b1[0] + ' vs ' + b0[0]);
+ok('遠い側の辺が引っ張られる', near(b1[1], b0[1] - 0.1347, 1e-3));
+ok('D は変わらない', near(b1[3] - b1[2], b0[3] - b0[2]));
+
+// --- 壁の追加 ---------------------------------------------------------------
+var before = plan.walls.length;
+adding = true;
+onAddPoint(ev(0, 1.5, 'x'));          // 1 点目
+ok('1 点目を置くと印が出る', addFrom !== null);
+onAddPoint(ev(b1[1], 1.5, 'x'));      // 2 点目（反対の壁まで）
+reindex();
+ok('壁が 1 枚増える', plan.walls.length === before + 1, 'n=' + plan.walls.length);
+ok('追加が終わると待ち受けは閉じる', adding === false && addFrom === null);
+var added = plan.walls[plan.walls.length - 1];
+ok('新しい壁に id が付く', /^w\d+$/.test(added.id), 'id=' + added.id);
+ok('id が既存と衝突しない',
+   plan.walls.filter(function(w){ return w.id === added.id; }).length === 1);
+ok('角から遠い点は吸い付かない（50mm 丸めのみ）',
+   near(added.a[0], 0) && near(added.a[1], 1.5), JSON.stringify(added.a));
+ok('追加した壁に開口は無い', added.openings.length === 0);
+ok('高さは既存の壁から取る', near(added.height, 2.408));
+buildGraph();
+ok('端点が既存の節点に溶接される', graph.nodes.length <= 6,
+   'nodes=' + graph.nodes.length);
+
+// 角の近く（25cm 以内）を指すと、その角へ吸い付く。
+adding = true;
+onAddPoint(ev(0.12, 0.08, 'x'));       // (0,0) の角のそば
+ok('角のそばは角へ吸い付く', near(addFrom[0], 0) && near(addFrom[1], 0),
+   JSON.stringify(addFrom));
+adding = false; addFrom = null;
+
+// --- 壁の削除 ---------------------------------------------------------------
+selWall = added.id;
+els['delWall'].onclick();
+ok('壁が消える', plan.walls.length === before, 'n=' + plan.walls.length);
+ok('選択が外れる', selWall === null);
+
+// --- 選択 -------------------------------------------------------------------
+var hn = hist.length;
+onWallDown(ev(0, 0, 'w3'));
+onWallUp();                            // 動かさずに離す
+ok('動かさずに離すと選択になる', selWall === 'w3', 'sel=' + selWall);
+ok('選択は控えに積まれない', hist.length === hn, hn + ' -> ' + hist.length);
+onWallDown(ev(0, 0, 'w3'));
+onWallUp();
+ok('もう一度掴むと選択が外れる', selWall === null);
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');
