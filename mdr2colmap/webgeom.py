@@ -23,13 +23,11 @@ from pathlib import Path
 
 import numpy as np
 
-from scipy.spatial import cKDTree
-
 from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 2
+PAYLOAD_VER = 3
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: 家具の格子（m）。小さいので細かく残す。
@@ -39,12 +37,6 @@ ROOM_CELLS = (0.05, 0.06, 0.07, 0.08, 0.10, 0.14)
 #: 壁として動かす面の、壁線からの許容距離（m）。実測で wall/window/door の
 #: 99.4〜100% がこの内側に入る。
 WALL_BAND = 0.25
-#: 継ぎ目から減衰させる幅（m）。**壁は剛体のまま動き、伸びるのは床と天井の
-#: 縁だけ**になる。1 列（平均 25mm）に負わせると 135mm の移動で 548% 伸びる。
-#: 0.10m で 135%、0.20m で 68%。
-SEAM_BLEND = 0.20
-#: 1 頂点が従う壁の数。角では 2 枚に跨がるので 2 つ持つ。
-SLOTS = 2
 #: ARKit の面分類のうち、壁として扱う値（wall / window / door）。
 WALL_CLASSES = (1, 6, 7)
 
@@ -83,13 +75,11 @@ def read_glb(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return V, C, F
 
 
-def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float,
-            extra: np.ndarray | None = None):
+def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float):
     """頂点クラスタリングで間引く。格子に丸めて併合し、潰れた面を捨てる。
 
-    `extra` に頂点ごとの値（N×K）を渡すと、位置や色と同じように平均して返す。
-    壁に従う重みを間引きの後まで運ぶために使う。**平均されることで、格子に
-    丸めて滲んだ境界が自然に中間の重みになる。**
+    **部品ごとに呼ぶので、部品は自分だけの頂点を持つ。** 壁と床が頂点を共有
+    しないため、壁を動かすと継ぎ目は引き伸びずにそのまま開く。
     """
     key = np.floor(V / cell).astype(np.int64)
     _, inv = np.unique(key, axis=0, return_inverse=True)
@@ -100,32 +90,22 @@ def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float,
     np.add.at(cnt, inv, 1)
     pos /= cnt[:, None]
     col /= cnt[:, None]
-    ex = None
-    if extra is not None:
-        ex = np.zeros((n, extra.shape[1]))
-        np.add.at(ex, inv, extra)
-        ex /= cnt[:, None]
     nf = inv[F]
     keep = (nf[:, 0] != nf[:, 1]) & (nf[:, 1] != nf[:, 2]) & (nf[:, 0] != nf[:, 2])
     nf = nf[keep]
     if len(nf) == 0:
-        return pos[:0], col[:0], nf, (None if ex is None else ex[:0])
+        return pos[:0], col[:0], nf
     used, remap = np.unique(nf, return_inverse=True)
-    return (pos[used], col[used], remap.reshape(-1, 3),
-            None if ex is None else ex[used])
+    return pos[used], col[used], remap.reshape(-1, 3)
 
 
-def wall_weights(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
-                 walls: list) -> np.ndarray | None:
-    """頂点ごとに「どの壁にどれだけ従うか」を出す。戻り値は N×（壁の数）。
+def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
+               walls: list) -> np.ndarray | None:
+    """面を壁へ振り分ける。戻り値は壁の添字、-1 は壁でない面。
 
-    面を分類と距離で壁へ振り分け、その頂点を 1 とする。壁に属さない頂点は
-    継ぎ目からの距離で 0 へ落とす。こうすると**壁・扉・窓は剛体のまま動き、
-    伸びるのは床と天井の縁だけ**になり、開口が歪まない。
-
-    減衰は**壁の頂点までの距離**で測る。継ぎ目を陽に探すより簡単だが、頂点の
-    間隔が SEAM_BLEND より粗いメッシュでは落ちすぎる。実測のメッシュは平均
-    25mm 間隔で、200mm に対して十分細かい。
+    分類（wall / window / door）と、平面図の壁線からの距離で決める。分類が
+    `none` でも立っていて壁の近くにあれば壁として扱う——実測で壁の近くの
+    `none` 面の 48.7% が立っており、落とすと壁に穴が開く。
     """
     if cls is None or not walls or len(cls) != len(F):
         return None
@@ -133,8 +113,6 @@ def wall_weights(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     cen = tri[:, :, [0, 2]].mean(axis=1)
     nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
-    # 分類が none でも、立っていて壁の近くにあれば壁として扱う。実測で
-    # 壁の近くの none 面の 48.7% が立っており、落とすと壁に穴が開く。
     wallish = np.isin(cls, WALL_CLASSES) | ((cls == 0) & (np.abs(nrm[:, 1]) < 0.35))
 
     A = np.array([w[1] for w in walls], dtype=float)
@@ -147,39 +125,8 @@ def wall_weights(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     s = np.einsum("fwk,wk->fw", q, U)
     d = np.einsum("fwk,wk->fw", q, Nn)
     ok = (s > -0.15) & (s < L[None] + 0.15) & (np.abs(d) < WALL_BAND)
-    owner = np.where(wallish & ok.any(axis=1),
-                     np.where(ok, np.abs(d), np.inf).argmin(axis=1), -1)
-
-    W = np.zeros((len(Vl), len(walls)), dtype=np.float64)
-    for k in range(len(walls)):
-        vs = np.unique(F[owner == k])
-        if len(vs):
-            W[vs, k] = 1.0
-    for k in range(len(walls)):
-        own = np.flatnonzero(W[:, k] > 0)
-        rest = np.flatnonzero(W[:, k] == 0)
-        if not len(own) or not len(rest):
-            continue
-        dist, _ = cKDTree(Vl[own]).query(Vl[rest],
-                                         distance_upper_bound=SEAM_BLEND)
-        W[rest, k] = np.clip(1.0 - dist / SEAM_BLEND, 0.0, 1.0)
-    return W
-
-
-def top_slots(W: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """効きの大きい壁を SLOTS 個だけ残して 1 バイトに丸める。255 は「無し」。
-
-    **合計が 1 を超えたら割って揃える。** 角の頂点は 2 枚の壁に 1 ずつ従うが、
-    その 2 枚は節点を共有しているので、どちらの変換も角を同じ場所へ写す。
-    足すと変位が二重になる（実測で 0.5m の移動が 0.98m になった）。平均を
-    取れば一致した答えがそのまま出る。
-    """
-    order = np.argsort(-W, axis=1)[:, :SLOTS]
-    wt = np.take_along_axis(W, order, axis=1)
-    tot = wt.sum(axis=1, keepdims=True)
-    wt = np.where(tot > 1.0, wt / np.maximum(tot, 1e-9), wt)
-    idx = np.where(wt > 0.004, order, 255).astype(np.uint8)
-    return idx, np.clip(np.round(wt * 255), 0, 255).astype(np.uint8)
+    return np.where(wallish & ok.any(axis=1),
+                    np.where(ok, np.abs(d), np.inf).argmin(axis=1), -1)
 
 
 def _b64(a: np.ndarray) -> str:
@@ -242,7 +189,7 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
                        [round(float(ol[(i + 1) % len(ol)][0] - x0), 4),
                         round(float(ol[(i + 1) % len(ol)][1] - z0), 4)])
                       for i in range(len(ol))]
-    weights = wall_weights(Vl, F, cls, wall_lines)
+    owner = wall_owner(Vl, F, cls, wall_lines)
 
     if boxes:
         tri = V[F]
@@ -260,7 +207,7 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
         sel = assigned == i
         if sel.sum() < 30:
             continue
-        p, c, f, _ = cluster(Vl, C, F[sel], OBJECT_CELL)
+        p, c, f = cluster(Vl, C, F[sel], OBJECT_CELL)
         if len(f) == 0:
             continue
         cxz = np.array([b.center[0], b.center[2]]) @ R.T
@@ -287,20 +234,39 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
             idx=_b64(f.astype("<u4"))))
         used_faces += len(f)
 
-    room = F[assigned < 0]
+    # **壁は家具と同じく別の部品に切り出す。** 部品ごとに間引くので壁は自分
+    # だけの頂点を持ち、動かしても床や天井を引き伸ばさず、継ぎ目がそのまま
+    # 開く。開いた先は撮れていないので、色も付かない。
+    rest = assigned < 0
+    wall_sel = []
+    if owner is not None:
+        for k in range(len(wall_lines)):
+            sel = rest & (owner == k)
+            if sel.sum() >= 30:
+                wall_sel.append((k, sel))
+                rest = rest & ~sel
+
+    room = F[rest]
     for cell in ROOM_CELLS:
-        p, c, f, w = cluster(Vl, C, room, cell, extra=weights)
-        if len(f) + used_faces <= face_budget:
+        groups = [cluster(Vl, C, room, cell)]
+        for _, sel in wall_sel:
+            groups.append(cluster(Vl, C, F[sel], cell))
+        total = sum(len(g[2]) for g in groups)
+        if total + used_faces <= face_budget:
             break
-    part = dict(id="__room__", label="部屋", kind="room", faces=len(f),
-                pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
-                idx=_b64(f.astype("<u4")))
-    if w is not None and len(w):
-        # 壁ごとの追従。1 頂点あたり「どの壁か」と「どれだけ」を SLOTS 組。
-        idx, wt = top_slots(w)
-        part["widx"] = _b64(idx)
-        part["wwt"] = _b64(wt)
-    parts.insert(0, part)
+    p, c, f = groups[0]
+    for (k, _), (wp, wc, wf) in zip(wall_sel, groups[1:]):
+        if len(wf) == 0:
+            continue
+        wid, a, b = wall_lines[k]
+        parts.insert(0, dict(id=f"__wall__{wid}", label=f"壁 {wid}", kind="wall",
+                             wall=wid, a=a, b=b, faces=len(wf),
+                             pos=_b64(wp.astype("<f4")),
+                             col=_b64(wc.round().astype("u1")),
+                             idx=_b64(wf.astype("<u4"))))
+    parts.insert(0, dict(id="__room__", label="部屋", kind="room", faces=len(f),
+                         pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
+                         idx=_b64(f.astype("<u4"))))
 
     return dict(parts=parts,
                 extent=[round(float(rot[:, 0].max() - x0), 3),
@@ -311,5 +277,4 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
                 floorY=round(float(floor_y), 4),
                 sourceFaces=int(len(F)), roomCell=cell,
                 walls=[dict(id=i, a=a, b=b) for i, a, b in wall_lines],
-                slots=SLOTS, seamBlend=SEAM_BLEND,
                 hasClass=cls is not None)

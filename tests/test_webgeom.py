@@ -39,60 +39,64 @@ WALLS = [("w0", [0.0, 0.0], [3.0, 0.0]), ("w1", [3.0, 0.0], [3.0, 3.0]),
          ("w2", [3.0, 3.0], [0.0, 3.0]), ("w3", [0.0, 3.0], [0.0, 0.0])]
 
 
-def test_wall_faces_get_full_weight():
+def test_wall_faces_are_assigned_to_their_wall():
     V, F, cls = _box_room()
-    W = webgeom.wall_weights(V, F, cls, WALLS)
-    assert W.shape == (len(V), 4)
-    # 壁の頂点（高さを持つもの）は、どれか 1 枚に完全に従う
-    high = V[:, 1] > 1.0
-    assert np.allclose(W[high].max(axis=1), 1.0)
+    own = webgeom.wall_owner(V, F, cls, WALLS)
+    assert own is not None and len(own) == len(F)
+    # 立っている面はすべてどれかの壁に付く
+    tri = V[F]
+    nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    nrm /= np.linalg.norm(nrm, axis=1, keepdims=True)
+    standing = np.abs(nrm[:, 1]) < 0.35
+    assert (own[standing] >= 0).all()
+    # しかも正しい壁に付く（z=0 の面は w0）
+    cen = tri.mean(axis=1)
+    z0 = standing & (cen[:, 2] < 0.01)
+    assert (own[z0] == 0).all(), set(own[z0].tolist())
 
 
-def test_floor_far_from_walls_follows_nothing():
+def test_floor_is_not_a_wall():
     V, F, cls = _box_room()
-    W = webgeom.wall_weights(V, F, cls, WALLS)
-    mid = (np.abs(V[:, 0] - 1.5) < 0.3) & (np.abs(V[:, 2] - 1.5) < 0.3)
-    assert mid.any()
-    assert W[mid].max() == 0.0, "部屋の真ん中の床がどれかの壁に従っている"
+    own = webgeom.wall_owner(V, F, cls, WALLS)
+    tri = V[F]
+    flat = tri[:, :, 1].max(axis=1) < 1e-9
+    assert flat.any()
+    assert (own[flat] == -1).all(), "床が壁に取り込まれている"
 
 
-def test_weight_falls_off_from_the_seam():
-    """床は壁の際から SEAM_BLEND かけて 0 へ落ちる。**壁そのものは剛体。**"""
+def test_unclassified_but_standing_counts_as_wall():
+    """分類が none でも立っていれば壁。実測で壁の近くの none 面の 48.7% が
+    立っており、落とすと壁に穴が開く。"""
     V, F, cls = _box_room()
-    W = webgeom.wall_weights(V, F, cls, WALLS)[:, 0]        # w0 は z=0 の壁
-    floor = (V[:, 1] < 1e-9) & (np.abs(V[:, 0] - 1.5) < 1e-9)
-    z = V[floor][:, 2]; w = W[floor]
-    order = np.argsort(z)
-    z, w = z[order], w[order]
-    assert w[0] == 1.0, "壁の際の床が従っていない"
-    assert all(w[i] >= w[i + 1] - 1e-9 for i in range(len(w) - 1)), w
-    off = z[w == 0.0]
-    assert off.min() <= webgeom.SEAM_BLEND + 0.11, off.min()
-    assert ((0.0 < w) & (w < 1.0)).sum() >= 1, w
+    cls = cls.copy()
+    tri = V[F]
+    cen = tri.mean(axis=1)
+    target = (cls == 1) & (cen[:, 2] < 0.01)
+    cls[target] = 0                                  # none にしてみる
+    own = webgeom.wall_owner(V, F, cls, WALLS)
+    assert (own[target] == 0).all()
 
 
-def test_slots_are_normalised_so_corners_do_not_double():
-    """角は 2 枚の壁に 1 ずつ従う。足すと変位が二重になるので割って揃える。"""
-    W = np.array([[1.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.4, 0.3, 0.0, 0.0]])
-    idx, wt = webgeom.top_slots(W)
-    assert idx.shape == (3, webgeom.SLOTS)
-    # 1 バイトに丸めるので 0.5 は 128/255。合計は 1 の前後 1/255 に収まる。
-    assert abs(wt[0].sum() / 255 - 1.0) <= 2 / 255    # 角は半分ずつ
-    assert wt[1][0] == 255 and idx[1][1] == 255
-    assert abs(wt[2].sum() / 255 - 0.7) < 0.01  # 1 以下はそのまま
+def test_a_wall_far_from_every_line_is_left_alone():
+    """平面図に無い壁（間仕切りの残骸など）は動かさない。"""
+    V, F, cls = _box_room()
+    far = [("w0", [0.0, 10.0], [3.0, 10.0])]
+    own = webgeom.wall_owner(V, F, cls, far)
+    assert (own == -1).all()
 
 
-def test_cluster_carries_the_weights_through():
-    """間引きで平均されるので、滲んだ境界が中間の重みになる。"""
-    V = np.array([[0.0, 0, 0], [0.01, 0, 0], [1.0, 0, 0], [0.0, 0, 1.0]])
-    C = np.zeros((4, 3), np.uint8)
-    F = np.array([[0, 2, 3], [1, 2, 3]])
-    W = np.array([[1.0], [0.0], [0.0], [0.0]])
-    p, c, f, w = webgeom.cluster(V, C, F, 0.1, extra=W)
-    assert w is not None and len(w) == len(p)
-    assert 0.0 < w.max() < 1.0                 # 2 頂点が溶けて中間の値になる
-
-
-def test_no_classification_means_no_weights():
+def test_no_classification_means_no_assignment():
     V, F, _ = _box_room()
-    assert webgeom.wall_weights(V, F, None, WALLS) is None
+    assert webgeom.wall_owner(V, F, None, WALLS) is None
+
+
+def test_cluster_gives_each_part_its_own_vertices():
+    """部品ごとに呼ぶので頂点は共有されない。だから継ぎ目は裂けて開く。"""
+    V, F, cls = _box_room()
+    own = webgeom.wall_owner(V, F, cls, WALLS)
+    a = webgeom.cluster(V, np.zeros((len(V), 3), np.uint8), F[own == 0], 0.05)
+    b = webgeom.cluster(V, np.zeros((len(V), 3), np.uint8), F[own == 1], 0.05)
+    assert len(a[0]) and len(b[0])
+    shared = {tuple(np.round(q, 6)) for q in a[0]} & {tuple(np.round(q, 6)) for q in b[0]}
+    # 角で座標が一致する頂点はあり得るが、別配列なので動かしても連動しない
+    assert a[2].max() < len(a[0]) and b[2].max() < len(b[0])

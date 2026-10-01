@@ -316,54 +316,61 @@ ok('壁が無ければ直方体も無い', (function () {
 
 
 // --- スキャンした壁を編集に追従させる ---------------------------------------
-// three.js は読めないので、変形の計算だけを最小の器に入れて確かめる。
+// 壁は家具と同じく別部品で、自分だけの頂点を持つ。three.js は読めないので、
+// 器だけ最小に作って変形の計算を確かめる。
 restore(0);
 reindex();
-origWalls = plan.walls.map(function (w) {
-  var f = frameOf([w.a[0], w.a[1]], [w.b[0], w.b[1]]);
-  f.id = w.id; return f;
-});
-// v0: w3 に完全に従う / v1: どの壁にも従わない / v2: 角で w3 と w1 に半分ずつ
-var base = new Float32Array([0.6, 1.0, 0.02,
-                             1.5, 1.0, 1.80,
-                             3.10, 1.0, 0.02]);
-roomBase = base;
-roomWIdx = new Uint8Array([3, 255,  255, 255,  3, 1]);
-roomWWt  = new Uint8Array([255, 0,  0, 0,  128, 128]);
-roomGeo = { attributes: { position: { array: new Float32Array(base), needsUpdate: false } },
-            computeVertexNormals: function () {} };
+function fakeWall(id, a, b, pts) {
+  var base = new Float32Array(pts);
+  return { id: id, orig: frameOf(a, b), moved: false, base: base,
+           geo: { attributes: { position: { array: new Float32Array(base),
+                                            needsUpdate: false } },
+                  computeVertexNormals: function () {} } };
+}
+// w3 は (0,0)-(3.1347,0)、w1 は (3.1347,0)-(3.1347,3.5754)。角を共有する。
+wallParts = [fakeWall('w3', [0, 0], [3.1347, 0],
+                      [0.6, 1.0, 0.02,  1.5, 0.3, -0.01,  3.0, 2.0, 0.02]),
+             fakeWall('w1', [3.1347, 0], [3.1347, 3.5754],
+                      [3.12, 1.0, 0.5,  3.12, 1.0, 2.0])];
 followWalls = true;
-var P = roomGeo.attributes.position.array;
+var P = wallParts[0].geo.attributes.position.array;
+var Q = wallParts[1].geo.attributes.position.array;
 
 onWallDown(ev(0, 0, 'w3'));
 onWallMove(ev(0, 0.5, 'w3'));            // w3 を法線方向へ +0.5
 onWallUp();
-ok('壁に従う頂点が壁と同じだけ動く', near(P[2], 0.52, 1e-4), 'z=' + P[2]);
-ok('沿う向きには動かない', near(P[0], 0.6, 1e-6), 'x=' + P[0]);
-ok('高さは変わらない', near(P[1], 1.0, 1e-6));
-ok('どの壁にも従わない頂点は動かない',
-   near(P[3], 1.5) && near(P[4], 1.0) && near(P[5], 1.8),
-   [P[3], P[4], P[5]].join(','));
-// 角は w3 と w1 の変換が一致する。足すと二重になるので平均を取る。
-// 重みは 1 バイトなので 0.2% の丸めが乗る（0.5 は 128/255 = 0.50196）。
-// 500mm の移動で 1mm。許容はその幅で取る。
-ok('角で変位が二重にならない', near(P[8], 0.52, 0.003), 'z=' + P[8]);
-ok('角の誤差は丸めのぶんだけ', Math.abs(P[8] - 0.52) < 0.5 * 2 / 255,
-   'ずれ ' + ((P[8] - 0.52) * 1000).toFixed(2) + ' mm');
-ok('更新の印が立つ', roomGeo.attributes.position.needsUpdate === true);
+ok('壁の面が壁と同じだけ動く', near(P[2], 0.52, 1e-5) && near(P[8], 0.52, 1e-5),
+   P[2] + ' / ' + P[8]);
+ok('面の厚みの差は保たれる', near(P[5], 0.49, 1e-5), 'z=' + P[5]);
+ok('沿う向きには動かない', near(P[0], 0.6, 1e-5) && near(P[6], 3.0, 1e-5));
+ok('高さは変わらない', near(P[1], 1.0) && near(P[4], 0.3) && near(P[7], 2.0));
+ok('更新の印が立つ', wallParts[0].geo.attributes.position.needsUpdate === true);
+ok('引き伸ばしは起きない（部品が自分の頂点を持つ）',
+   near(P[2] - P[5], 0.03, 1e-5), (P[2] - P[5]).toFixed(5));
+// **端点だけが動いた隣の壁は滑らない。** 線分ではなく線を写すため。
+ok('端が縮んだ隣の壁は動かない',
+   near(Q[2], 0.5, 1e-6) && near(Q[5], 2.0, 1e-6), Q[2] + ' / ' + Q[5]);
+ok('隣の壁は法線方向にも動かない', near(Q[0], 3.12, 1e-6) && near(Q[3], 3.12, 1e-6));
 
-// 元に戻せば形も戻る
 restore(0);
-ok('取り消すとスキャンも元の形へ戻る',
-   near(P[2], 0.02, 1e-6) && near(P[8], 0.02, 1e-6), P[2] + ' / ' + P[8]);
+ok('取り消すと壁も元の位置へ戻る', near(P[2], 0.02, 1e-5), 'z=' + P[2]);
 
-// 切ると変形しない
+// 角のドラッグでは、その角に集まる壁だけが回る
+onNodeDown(ev(0, 0, null, graph.nodes.findIndex(
+  function (n) { return near(n.x, 0) && near(n.z, 0); })));
+onNodeMove(ev(0.3, 0.3, null, 0));
+onNodeUp();
+ok('角に集まる壁は回る', Math.abs(P[2] - 0.02) > 0.1, 'z=' + P[2]);
+ok('角から遠い端ほど動かない',
+   Math.hypot(P[6] - 3.0, P[8] - 0.02) < Math.hypot(P[0] - 0.6, P[2] - 0.02),
+   Math.hypot(P[6] - 3.0, P[8] - 0.02).toFixed(4));
+ok('角に関わらない壁は動かない', near(Q[2], 0.5, 1e-6) && near(Q[5], 2.0, 1e-6));
+
+restore(0);
 followWalls = false;
-onWallDown(ev(0, 0, 'w3'));
-onWallMove(ev(0, 0.5, 'w3'));
-onWallUp();
-ok('「壁を動かす」を切ると形は変わらない', near(P[2], 0.02, 1e-6), 'z=' + P[2]);
+drawPlan();
+ok('「壁を動かす」を切ると元の位置に戻る', near(P[2], 0.02, 1e-5), 'z=' + P[2]);
 followWalls = true;
-roomGeo = roomBase = roomWIdx = roomWWt = null;
+wallParts = [];
 
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');
