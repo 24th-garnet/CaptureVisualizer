@@ -27,7 +27,7 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 3
+PAYLOAD_VER = 4
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: 家具の格子（m）。小さいので細かく残す。
@@ -39,6 +39,15 @@ ROOM_CELLS = (0.05, 0.06, 0.07, 0.08, 0.10, 0.14)
 WALL_BAND = 0.25
 #: ARKit の面分類のうち、壁として扱う値（wall / window / door）。
 WALL_CLASSES = (1, 6, 7)
+#: 壁から生やして拾う突出物（エアコン・配管・柱など）の届く距離（m）。
+#: 壁面から離れていても、壁から辿り着けるならその壁の一部として動かす。
+PROTRUSION_REACH = 0.6
+#: 床と天井から離す距離（m）。分類が none の床・天井面が 23% あるので、
+#: **分類だけでは止められない。** 高さでも止める。
+PLANE_CLEAR = 0.15
+#: 突出物を辿るときに越えない分類。床・天井のほか、家具（table / seat）も
+#: 止める。RoomPlan が箱を持たない家具の縁を壁へ吸い込まないため。
+STOP_CLASSES = (2, 3, 4, 5)
 
 FURNITURE_JA = {"sofa": "ソファ", "stairs": "階段", "table": "テーブル",
                 "bed": "ベッド", "chair": "椅子", "storage": "収納",
@@ -100,12 +109,18 @@ def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float):
 
 
 def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
-               walls: list) -> np.ndarray | None:
+               walls: list, assigned: np.ndarray | None = None,
+               adj: list | None = None,
+               ceiling_y: float | None = None) -> np.ndarray | None:
     """面を壁へ振り分ける。戻り値は壁の添字、-1 は壁でない面。
 
     分類（wall / window / door）と、平面図の壁線からの距離で決める。分類が
     `none` でも立っていて壁の近くにあれば壁として扱う——実測で壁の近くの
     `none` 面の 48.7% が立っており、落とすと壁に穴が開く。
+
+    `adj` を渡すと、そこから**壁にしか繋がっていない突出物**（エアコン、
+    配管、柱）を辿って一緒に拾う。床・天井・家具で止まるので、壁から
+    床や天井を伝って部屋じゅうへ広がることはない。
     """
     if cls is None or not walls or len(cls) != len(F):
         return None
@@ -124,9 +139,35 @@ def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     q = cen[:, None, :] - A[None]
     s = np.einsum("fwk,wk->fw", q, U)
     d = np.einsum("fwk,wk->fw", q, Nn)
-    ok = (s > -0.15) & (s < L[None] + 0.15) & (np.abs(d) < WALL_BAND)
-    return np.where(wallish & ok.any(axis=1),
-                    np.where(ok, np.abs(d), np.inf).argmin(axis=1), -1)
+    span = (s > -0.15) & (s < L[None] + 0.15)
+    ok = span & (np.abs(d) < WALL_BAND)
+    own = np.where(wallish & ok.any(axis=1),
+                   np.where(ok, np.abs(d), np.inf).argmin(axis=1), -1)
+    if adj is None:
+        return own
+
+    # **壁からしか辿り着けない突出物を、その壁の一部として拾う。**
+    # エアコンや配管は壁にしか付いていないので、壁が動けば一緒に動く。
+    # RoomPlan が箱を持つ物（`assigned >= 0`）は対象外——壁に接していても
+    # 家具であり、位置は人が平面図で決めるもの。
+    ceiling = float(Vl[:, 1].max()) if ceiling_y is None else ceiling_y
+    cy = Vl[F][:, :, 1].mean(axis=1)
+    reach = np.where(span, np.abs(d), np.inf).min(axis=1)
+    free = np.ones(len(F), bool) if assigned is None else (assigned < 0)
+    ok_grow = (own < 0) & free & ~np.isin(cls, STOP_CLASSES) \
+        & (cy > PLANE_CLEAR) & (cy < ceiling - PLANE_CLEAR) \
+        & (reach < PROTRUSION_REACH)
+    frontier = np.flatnonzero(own >= 0).tolist()
+    while frontier:
+        nxt = []
+        for f in frontier:
+            k = own[f]
+            for h in adj[f]:
+                if ok_grow[h] and own[h] < 0:
+                    own[h] = k
+                    nxt.append(h)
+        frontier = nxt
+    return own
 
 
 def _b64(a: np.ndarray) -> str:
@@ -189,18 +230,23 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
                        [round(float(ol[(i + 1) % len(ol)][0] - x0), 4),
                         round(float(ol[(i + 1) % len(ol)][1] - z0), 4)])
                       for i in range(len(ol))]
-    owner = wall_owner(Vl, F, cls, wall_lines)
-
     if boxes:
         tri = V[F]
         centroids = tri.mean(axis=1)
         normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
         normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+        adj = segment.face_adjacency(F, V)
         assigned = segment.assign_faces(
             centroids, boxes, floor_y, walls=lay.walls, ceiling_y=lay.ceiling_y,
-            normals=normals, adj=segment.face_adjacency(F, V))
+            normals=normals, adj=adj)
+        ceil_h = float(lay.ceiling_y - floor_y)
     else:
+        adj = segment.face_adjacency(F, V)
         assigned = np.full(len(F), -1)
+        ceil_h = float(plan.ceiling_y - floor_y)
+
+    # 面を壁へ。家具の振り分け（assigned）と隣接表が要るのでここで呼ぶ。
+    owner = wall_owner(Vl, F, cls, wall_lines, assigned, adj, ceil_h)
 
     parts, used_faces = [], 0
     for i, b in enumerate(boxes):
