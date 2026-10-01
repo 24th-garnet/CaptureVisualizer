@@ -1179,16 +1179,36 @@ function buildShell() {
     const a = [f.a[0] + f.n[0] * d, f.a[1] + f.n[1] * d];
     const b = [a[0] + f.u[0] * f.L, a[1] + f.u[1] * f.L];
     const hh = w.height || H;
-    // **足した壁には色の格子が無い。** スキャン当時そこに壁は無かったので、
-    // 無機的な絵にして編集の結果だと分かるようにする。
-    const added = !fillMaps[w.id];
     const vt = hh / shellHeight;
-    const uv = added
-      ? [[0, 0], [f.L / PLACEHOLDER_TILE, 0],
-         [f.L / PLACEHOLDER_TILE, hh / PLACEHOLDER_TILE], [0, hh / PLACEHOLDER_TILE]]
-      : [[0, 0], [1, 0], [1, vt], [0, vt]];
-    quad([[a[0], 0, a[1]], [b[0], 0, b[1]], [b[0], hh, b[1]], [a[0], hh, a[1]]],
-         uv, [f.n[0] * side, 0, f.n[1] * side], added ? PLACEHOLDER : w.id);
+    const nrm = [f.n[0] * side, 0, f.n[1] * side];
+    // 壁に沿って t ∈ [0, L] の区間に面を張る。
+    const span = (t0, t1, key, u0, u1) => {
+      if (t1 - t0 < 1e-4) return;
+      const p = t => [a[0] + f.u[0] * t, a[1] + f.u[1] * t];
+      const [pa, pb] = [p(t0), p(t1)];
+      const vTop = key === PLACEHOLDER ? hh / PLACEHOLDER_TILE : vt;
+      quad([[pa[0], 0, pa[1]], [pb[0], 0, pb[1]],
+            [pb[0], hh, pb[1]], [pa[0], hh, pa[1]]],
+           [[u0, 0], [u1, 0], [u1, vTop], [u0, vTop]], nrm, key);
+    };
+    // **引き伸ばしたところは絵にする。** 色の格子はスキャン当時の壁の長さぶん
+    // しか無い。伸びたぶんへ引き伸ばすと、元からあったように見えてしまう。
+    const tile = t => t / PLACEHOLDER_TILE;
+    const k = ow ? f.u[0] * ow.u[0] + f.u[1] * ow.u[1] : 0;
+    if (!fillMaps[w.id] || !ow || Math.abs(k) < 0.5) {
+      span(0, f.L, PLACEHOLDER, tile(0), tile(f.L));   // 足した壁・回した壁
+    } else {
+      // 元の壁の座標 s0 は t の一次式。s0 = c0 + k·t。
+      const c0 = (a[0] - ow.a[0]) * ow.u[0] + (a[1] - ow.a[1]) * ow.u[1];
+      const tAt = s0 => (s0 - c0) / k;
+      let lo = tAt(0), hi = tAt(ow.L);
+      if (lo > hi) { const q = lo; lo = hi; hi = q; }
+      lo = Math.max(0, Math.min(f.L, lo));
+      hi = Math.max(0, Math.min(f.L, hi));
+      span(0, lo, PLACEHOLDER, tile(0), tile(lo));
+      span(lo, hi, w.id, (c0 + k * lo) / ow.L, (c0 + k * hi) / ow.L);
+      span(hi, f.L, PLACEHOLDER, tile(hi), tile(f.L));
+    }
   }
   shell = g;
   scene.add(g);

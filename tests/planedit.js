@@ -716,6 +716,51 @@ ok('元からの壁は色の格子のまま', kids[4].material.o.map
    && kids[4].material.o.map.w === 4);
 restore(0); reindex();
 
+// **伸ばしたぶんは絵になる。** 色の格子はスキャン当時の長さぶんしか無い。
+restore(0); reindex();
+// w3（z=0、長さ 3.1347）の端の節点を外へ出して 1m 伸ばす
+var ni = graph.nodes.findIndex(function (n) { return near(n.x, 3.1347) && near(n.z, 0); });
+onNodeDown(ev(3.1347, 0, null, ni));
+onNodeMove(ev(4.1347, 0, null, ni));
+onNodeUp();
+var w3 = plan.walls.find(function (v) { return v.id === 'w3'; });
+ok('w3 が伸びた', frameOf(w3.a, w3.b).L > 4.0, frameOf(w3.a, w3.b).L.toFixed(3));
+// w3 の面を位置で拾う。**全頂点が z≈0 にあるもの**だけ——最初の頂点だけで
+// 絞ると、角で斜めになった隣の壁まで拾ってしまう。
+var segs = shell.children.filter(function (m) {
+  var a = m.geometry.attrs.position.array;
+  if (a.length !== 18) return false;
+  for (var i = 2; i < a.length; i += 3) if (Math.abs(a[i]) > 0.2) return false;
+  return true;
+});
+var withMap = segs.filter(function (m) { return m.material.o.map && m.material.o.map.w; });
+var withPh = segs.filter(function (m) { return m.material.o.map && m.material.o.map.canvas; });
+ok('元の長さぶんは色の格子', withMap.length >= 1, 'n=' + withMap.length);
+ok('伸ばしたぶんは絵', withPh.length >= 1, 'n=' + withPh.length);
+ok('色の格子の UV は 0〜1 に収まる', (function () {
+  return withMap.every(function (m) {
+    var u = m.geometry.attrs.uv.array;
+    for (var i = 0; i < u.length; i += 2) if (u[i] < -1e-6 || u[i] > 1 + 1e-6) return false;
+    return true;
+  });
+})());
+// 区切りは元の壁の端（3.1347m）に来る
+function xrange(m) {
+  var a = m.geometry.attrs.position.array, xs = [];
+  for (var i = 0; i < a.length; i += 3) xs.push(a[i]);
+  return [Math.min.apply(null, xs), Math.max.apply(null, xs)];
+}
+ok('色の格子は元の長さまで', (function () {
+  var r = xrange(withMap[0]);
+  return near(r[0], 0, 1e-3) && near(r[1], 3.1347, 1e-3);
+})(), JSON.stringify(xrange(withMap[0])));
+// 節点は 50mm に丸められるので、伸ばした端は 4.15
+ok('絵は元の端から新しい端まで', (function () {
+  var r = xrange(withPh[0]);
+  return near(r[0], 3.1347, 1e-3) && near(r[1], 4.15, 1e-3);
+})(), JSON.stringify(xrange(withPh[0])));
+restore(0); reindex();
+
 // 格子がまったく無ければ一色で逃がす
 made = []; fillMaps = {}; fillTex = new Map(); buildShell();
 ok('格子が無ければ一色', made[2].m.o.map === null && near(made[2].m.o.color.r, 0.56));
