@@ -141,3 +141,76 @@ def test_cannot_escape_the_root(tmp_path):
         assert get(f"{base}/api/scans/nope.mdr/plan") == 404
     finally:
         srv.shutdown()
+
+
+# --- 編集の保存とロールバック -----------------------------------------------
+#
+# **編集後を正とする。** ただしスキャン直後へいつでも戻せること。
+# 戻したときに識別子が変わると、家具の moves.json との対応が切れる。
+
+def test_entities_have_stable_ids(tmp_path):
+    import json as _json
+    from mdr2colmap import webapp as W
+    d = make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-01-01T00:00:00"})
+    _json.dump(_ROOM, open(d / "room.json", "w"))
+    first = W.derive_plan(d)
+    again = W.derive_plan(d)
+    ids = [w["id"] for w in first["walls"]]
+    assert ids == [w["id"] for w in again["walls"]], "導出のたびに識別子が変わる"
+    assert len(set(ids)) == len(ids), "識別子が重複している"
+    assert all("thickness" in w for w in first["walls"])
+
+
+def test_edited_plan_wins_and_can_be_reverted(tmp_path):
+    import json as _json
+    from mdr2colmap import webapp as W
+    d = make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-01-01T00:00:00"})
+    _json.dump(_ROOM, open(d / "room.json", "w"))
+    base = W.derive_plan(d)
+
+    edited = _json.loads(_json.dumps(base))
+    edited["roomName"] = "書斎"
+    edited["walls"][0]["a"] = [0.0, 9.0]
+    W.save_plan(d, edited)
+
+    got = W.plan_payload(d)
+    assert got["roomName"] == "書斎"
+    assert got["walls"][0]["a"] == [0.0, 9.0]
+    assert got["edited"] is True
+    # **元データは無傷。** room.json を書き換えていないこと。
+    assert W.derive_plan(d)["walls"][0]["a"] == base["walls"][0]["a"]
+
+    assert W.reset_plan(d)["reverted"] is True
+    after = W.plan_payload(d)
+    assert after["walls"][0]["a"] == base["walls"][0]["a"]
+    assert not after.get("edited")
+    assert [w["id"] for w in after["walls"]] == [w["id"] for w in base["walls"]]
+
+
+def test_reset_without_edits_is_harmless(tmp_path):
+    import json as _json
+    from mdr2colmap import webapp as W
+    d = make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-01-01T00:00:00"})
+    _json.dump(_ROOM, open(d / "room.json", "w"))
+    assert W.reset_plan(d)["reverted"] is False
+    assert W.plan_payload(d)["walls"]
+
+
+#: 4 枚の壁が閉じた最小の RoomPlan。実データの形に合わせてある。
+def _wall(cx, cz, w, ax):
+    t = [[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0], [cx, 0.0, cz, 1.0]]
+    if ax == "z":
+        t[0] = [0, 0, -1.0, 0]
+        t[2] = [1.0, 0, 0, 0]
+    return {"identifier": f"wall-{cx}-{cz}", "dimensions": [w, 2.4, 0.0],
+            "transform": [v for row in t for v in row],
+            "category": {"wall": {}}, "confidence": {"high": {}}}
+
+
+_ROOM = {
+    "walls": [_wall(1.5, 0.0, 3.0, "x"), _wall(1.5, 3.0, 3.0, "x"),
+              _wall(0.0, 1.5, 3.0, "z"), _wall(3.0, 1.5, 3.0, "z")],
+    "doors": [], "windows": [], "openings": [], "objects": [],
+    "sections": [], "floors": [],
+    "version": 2, "story": 0,
+}

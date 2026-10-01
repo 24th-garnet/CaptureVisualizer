@@ -42,6 +42,12 @@ WEB_ROOT = Path(__file__).parent / "web"
 _build_lock = threading.Lock()
 #: 合言葉を載せる cookie の名前。
 COOKIE = "madoriba_token"
+#: 壁厚の既定値（m）。**片面しか撮れない壁では実測できない**ので作図上の
+#: 仮定。両面が撮れていれば測れる（実測で 29〜160mm）が、まずは人が直せる
+#: 値として置く。
+WALL_THICKNESS = 0.12
+#: 人が編集した平面図。room.json は書き換えず、全体をここに持つ。
+EDIT_FILE = "plan_edit.json"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -84,6 +90,7 @@ def summary(bundle: Path) -> dict:
     s["hasVertexColor"] = (bundle / "mesh_vc.glb").exists()
     s["hasClass"] = (bundle / "mesh_class.bin").exists()
     s["hasMoves"] = (bundle / "moves.json").exists()
+    s["edited"] = (bundle / EDIT_FILE).exists()
     s["hasArranged"] = (bundle / "arranged.ply").exists()
     return s
 
@@ -99,10 +106,23 @@ def _read_json(path: Path) -> dict | None:
 
 
 def plan_payload(bundle: Path) -> dict:
-    """平面図のデータ。座標はすべて**主方向で回した枠・メートル**。
+    """平面図のデータ。**編集済みがあればそれを正とする。**
 
-    3D（`webgeom.build`）と同じ枠に載せる。こうすると平面図で動かした量を
-    そのまま 3D の平行移動に使える。
+    人が壁を動かした時点で図面は実測ではなくなるが、それを承知で編集結果を
+    成果物とする方針。いつでも `reset_plan` でスキャン直後へ戻せる。
+    """
+    edited = _read_json(bundle / EDIT_FILE)
+    if edited:
+        edited["edited"] = True
+        return edited
+    return derive_plan(bundle)
+
+
+def derive_plan(bundle: Path) -> dict:
+    """スキャンから平面図を導く。**人の編集を含まない。**
+
+    座標はすべて主方向で回した枠・メートル。3D（`webgeom.build`）と同じ枠に
+    載せるので、平面図で動かした量をそのまま 3D の平行移動に使える。
     """
     room_json = bundle / "room.json"
     if room_json.exists():
@@ -130,12 +150,17 @@ def _plan_from_roomplan(room_json: Path) -> dict:
         return [round(float(p[0] - x0), 4), round(float(p[1] - z0), 4)]
 
     walls = []
-    for w in lay.walls:
+    for i, w in enumerate(lay.walls):
         a, b = w.p0 @ R.T, w.p1 @ R.T
-        walls.append(dict(a=to(a), b=to(b), height=round(w.height, 3),
-                          openings=[dict(s=round(o.start, 4), e=round(o.end, 4),
+        # **識別子は順序から決める。** スキャン直後へ戻したときに同じ識別子が
+        # 再現されないと、家具の moves.json との対応が切れる。
+        walls.append(dict(id=f"w{i}", a=to(a), b=to(b), height=round(w.height, 3),
+                          thickness=WALL_THICKNESS,
+                          openings=[dict(id=f"w{i}-o{j}",
+                                         s=round(o.start, 4), e=round(o.end, 4),
                                          cat=o.category, sill=round(o.sill, 4),
-                                         h=round(o.height, 4)) for o in w.openings]))
+                                         h=round(o.height, 4))
+                                    for j, o in enumerate(w.openings)]))
     objects = []
     for b in boxes:
         c = np.array([b.center[0], b.center[2]]) @ R.T
@@ -169,8 +194,8 @@ def _plan_from_mesh(mesh: Mesh) -> dict:
     pts = p.outline
     x0, z0 = float(pts[:, 0].min()), float(pts[:, 1].min())
     outline = [[round(float(q[0] - x0), 4), round(float(q[1] - z0), 4)] for q in pts]
-    walls = [dict(a=outline[i], b=outline[(i + 1) % len(outline)],
-                  height=round(p.height, 3), openings=[])
+    walls = [dict(id=f"w{i}", a=outline[i], b=outline[(i + 1) % len(outline)],
+                  height=round(p.height, 3), thickness=WALL_THICKNESS, openings=[])
              for i in range(len(outline))]
     return dict(source="mesh",
                 angle=round(p.angle, 2),
@@ -199,6 +224,23 @@ def geom_payload(bundle: Path) -> dict:
         cache.parent.mkdir(exist_ok=True)
         cache.write_text(json.dumps(g))
     return g
+
+
+def save_plan(bundle: Path, doc: dict) -> dict:
+    """編集した平面図を書く。**room.json は触らない。**"""
+    doc = dict(doc)
+    doc.pop("edited", None)
+    (bundle / EDIT_FILE).write_text(json.dumps(doc, ensure_ascii=False, indent=1))
+    return {"ok": True}
+
+
+def reset_plan(bundle: Path) -> dict:
+    """スキャン直後へ戻す。編集ファイルを消すだけで、元データは無傷。"""
+    f = bundle / EDIT_FILE
+    existed = f.exists()
+    if existed:
+        f.unlink()
+    return {"ok": True, "reverted": existed}
 
 
 # --- 家具の移動 -------------------------------------------------------------
@@ -334,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(summary(bundle))
                 if what == "plan":
                     return self._json(plan_payload(bundle))
+                if what == "plan-origin":
+                    return self._json(derive_plan(bundle))
                 if what == "geom":
                     return self._json(geom_payload(bundle))
                 if what == "moves":
@@ -370,6 +414,10 @@ class Handler(BaseHTTPRequestHandler):
                     (bundle / "moves.json").write_text(
                         json.dumps(body, ensure_ascii=False, indent=2))
                     return self._json({"ok": True})
+                if what == "plan":
+                    return self._json(save_plan(bundle, body))
+                if what == "plan-reset":
+                    return self._json(reset_plan(bundle))
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
             self._json({"error": "そんな道は無い"}, 404)
