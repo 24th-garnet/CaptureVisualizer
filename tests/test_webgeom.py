@@ -96,6 +96,7 @@ def test_cluster_gives_each_part_its_own_vertices():
     own = webgeom.wall_owner(V, F, cls, WALLS)
     a = webgeom.cluster(V, np.zeros((len(V), 3), np.uint8), F[own == 0], 0.05)
     b = webgeom.cluster(V, np.zeros((len(V), 3), np.uint8), F[own == 1], 0.05)
+    assert a[3] is None and b[3] is None          # UV を渡していないので None
     assert len(a[0]) and len(b[0])
     shared = {tuple(np.round(q, 6)) for q in a[0]} & {tuple(np.round(q, 6)) for q in b[0]}
     # 角で座標が一致する頂点はあり得るが、別配列なので動かしても連動しない
@@ -190,7 +191,7 @@ def test_small_components_are_dropped():
                   [5, 1, 5], [5.02, 1, 5], [5, 1, 5.02]])   # 2cm の小片
     C = np.zeros((6, 3), np.uint8)
     F = np.array([[0, 1, 2], [3, 4, 5]])
-    p, c, f = webgeom.drop_small(V, C, F, 0.02)
+    p, c, f, _ = webgeom.drop_small(V, C, F, min_area=0.02)
     assert len(f) == 1, f
     assert len(p) == 3
     assert np.allclose(np.sort(p[f[0]], axis=0), np.sort(V[:3], axis=0))
@@ -200,7 +201,7 @@ def test_nothing_is_dropped_when_all_parts_are_big():
     V = np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [5, 1, 5], [6, 1, 5], [5, 1, 6]])
     C = np.zeros((6, 3), np.uint8)
     F = np.array([[0, 1, 2], [3, 4, 5]])
-    _, _, f = webgeom.drop_small(V, C, F, 0.02)
+    _, _, f, _ = webgeom.drop_small(V, C, F, min_area=0.02)
     assert len(f) == 2
 
 
@@ -218,3 +219,32 @@ def test_wall_sides_without_classification():
     """分類が無くても、低い面を床とみなして測れる。"""
     V, F, _ = _box_room()
     assert webgeom.wall_sides(V, F, None, WALLS) == [1, 1, 1, 1]
+
+
+def test_uv_is_part_of_the_cluster_key():
+    """UV も鍵に入れる。位置だけで丸めると、アトラスの継ぎ目をまたいで UV が
+    平均され、テクスチャがちぎれる。"""
+    # 同じ場所にあるが UV が離れた 2 枚（＝チャートの継ぎ目）
+    V = np.array([[0, 0, 0], [0.3, 0, 0], [0, 0, 0.3],
+                  [0.001, 0, 0], [0.3, 0, 0.001], [0.001, 0, 0.3]], float)
+    UV = np.array([[0.1, 0.1], [0.2, 0.1], [0.1, 0.2],
+                   [0.8, 0.8], [0.9, 0.8], [0.8, 0.9]])
+    C = np.zeros((6, 3), np.uint8)
+    F = np.array([[0, 1, 2], [3, 4, 5]])
+    _, _, f_pos, _ = webgeom.cluster(V, C, F, 0.5)
+    p, _, f_uv, uv = webgeom.cluster(V, C, F, 0.5, UV=UV)
+    assert len(f_pos) < len(f_uv), "位置だけだと 2 枚が溶けて消える"
+    assert uv is not None and len(uv) == len(p)
+    # 継ぎ目の両側が混ざっていない
+    assert uv.min() < 0.3 and uv.max() > 0.7, uv
+
+
+def test_small_parts_are_counted_by_position_not_by_uv_split():
+    """UV で割れた頂点のまま数えると、本物の面まで小片に見える。"""
+    # 1 辺 0.5m の板を 2 枚。中央で UV だけ割れている（位置は共有）。
+    V = np.array([[0, 0, 0], [0.5, 0, 0], [0, 0, 0.5], [0.5, 0, 0.5],
+                  [0.5, 0, 0], [0.5, 0, 0.5]], float)
+    C = np.zeros((6, 3), np.uint8)
+    F = np.array([[0, 1, 2], [4, 5, 3]])          # 頂点番号は別だが位置は連続
+    _, _, f, _ = webgeom.drop_small(V, C, F, min_area=0.05)
+    assert len(f) == 2, "位置で繋がっているのに切られている"

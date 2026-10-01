@@ -22,6 +22,7 @@ import struct
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
@@ -29,9 +30,13 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 5
+PAYLOAD_VER = 6
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
+#: テクスチャ付きのときの上限。**形は UV を運べれば足りる**——細かさは
+#: アトラス（2.64mm/texel）が持つ。歩くときの当たり判定も平面図へ移したので
+#: 面数は描画の費用だけに効く。
+TEXTURED_FACE_BUDGET = 100_000
 #: 家具の格子（m）。小さいので細かく残す。
 OBJECT_CELL = 0.03
 #: 部屋の格子の候補。予算に収まる最初のものを使う。
@@ -91,13 +96,70 @@ def read_glb(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return V, C, F
 
 
-def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float):
+def _glb_chunks(path: str | Path):
+    b = Path(path).read_bytes()
+    _, _, total = struct.unpack_from("<III", b, 0)
+    off, chunks = 12, {}
+    while off < total:
+        ln, ty = struct.unpack_from("<II", b, off)
+        off += 8
+        chunks[ty] = b[off:off + ln]
+        off += ln
+    return json.loads(chunks[0x4E4F534A].decode("utf-8")), chunks[0x004E4942]
+
+
+def read_textured(path: str | Path):
+    """テクスチャ付き GLB から位置・UV・面を読む。無ければ None。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    g, binc = _glb_chunks(p)
+    prim = g["meshes"][0]["primitives"][0]
+    if "TEXCOORD_0" not in prim["attributes"]:
+        return None
+
+    def acc(i: int, dtype: str, comp: int) -> np.ndarray:
+        a = g["accessors"][i]
+        bv = g["bufferViews"][a["bufferView"]]
+        start = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+        return np.frombuffer(binc, dtype=dtype, count=a["count"] * comp,
+                             offset=start).reshape(-1, comp)
+
+    V = acc(prim["attributes"]["POSITION"], "<f4", 3).astype(np.float64)
+    UV = acc(prim["attributes"]["TEXCOORD_0"], "<f4", 2).astype(np.float64)
+    idx = g["accessors"][prim["indices"]]
+    dt = {5125: "<u4", 5123: "<u2"}[idx["componentType"]]
+    F = acc(prim["indices"], dt, 1).reshape(-1, 3).astype(np.int64)
+    return V, UV, F
+
+
+def atlas_bytes(path: str | Path) -> tuple[bytes, str] | None:
+    """テクスチャ付き GLB に埋まっている画像を取り出す。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    g, binc = _glb_chunks(p)
+    if not g.get("images"):
+        return None
+    im = g["images"][0]
+    bv = g["bufferViews"][im["bufferView"]]
+    o = bv.get("byteOffset", 0)
+    return binc[o:o + bv["byteLength"]], im.get("mimeType", "image/jpeg")
+
+
+def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float,
+            UV: np.ndarray | None = None, uv_cell: float = 0.004):
     """頂点クラスタリングで間引く。格子に丸めて併合し、潰れた面を捨てる。
 
     **部品ごとに呼ぶので、部品は自分だけの頂点を持つ。** 壁と床が頂点を共有
     しないため、壁を動かすと継ぎ目は引き伸びずにそのまま開く。
+
+    `UV` を渡すと、**UV も鍵に入れて**まとめる。位置だけで丸めると、アトラスの
+    チャートの継ぎ目をまたいで UV が平均され、テクスチャがちぎれる。
     """
     key = np.floor(V / cell).astype(np.int64)
+    if UV is not None:
+        key = np.column_stack([key, np.floor(UV / uv_cell).astype(np.int64)])
     _, inv = np.unique(key, axis=0, return_inverse=True)
     n = int(inv.max()) + 1
     pos = np.zeros((n, 3)); col = np.zeros((n, 3)); cnt = np.zeros(n)
@@ -106,13 +168,19 @@ def cluster(V: np.ndarray, C: np.ndarray, F: np.ndarray, cell: float):
     np.add.at(cnt, inv, 1)
     pos /= cnt[:, None]
     col /= cnt[:, None]
+    uv = None
+    if UV is not None:
+        uv = np.zeros((n, 2))
+        np.add.at(uv, inv, UV)
+        uv /= cnt[:, None]
     nf = inv[F]
     keep = (nf[:, 0] != nf[:, 1]) & (nf[:, 1] != nf[:, 2]) & (nf[:, 0] != nf[:, 2])
     nf = nf[keep]
     if len(nf) == 0:
-        return pos[:0], col[:0], nf
+        return pos[:0], col[:0], nf, (None if uv is None else uv[:0])
     used, remap = np.unique(nf, return_inverse=True)
-    return pos[used], col[used], remap.reshape(-1, 3)
+    return (pos[used], col[used], remap.reshape(-1, 3),
+            None if uv is None else uv[used])
 
 
 def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
@@ -178,6 +246,7 @@ def wall_owner(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
 
 
 def drop_small(p: np.ndarray, c: np.ndarray, f: np.ndarray,
+               uv: np.ndarray | None = None,
                min_area: float = COMPONENT_MIN_AREA):
     """浮いた小片を落とす。連結成分ごとの面積で見る。
 
@@ -185,25 +254,33 @@ def drop_small(p: np.ndarray, c: np.ndarray, f: np.ndarray,
     が、どちらも十分大きいので残る。
     """
     if len(f) == 0:
-        return p, c, f
-    e = np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(p), len(p)))
+        return p, c, f, uv
+    # **繋がりは位置で見る。** UV を鍵に入れて間引くと、アトラスのチャートの
+    # 継ぎ目ごとに頂点が割れて位相が切れる。頂点番号のまま数えると成分が
+    # 30 個から 5,196 個に増え、本物の面を 13.6%（7.86 m²）消してしまう。
+    _, wid = np.unique(np.round(p / 1e-4).astype(np.int64), axis=0,
+                       return_inverse=True)
+    fw = wid[f]
+    e = np.vstack([fw[:, [0, 1]], fw[:, [1, 2]], fw[:, [2, 0]]])
+    n = int(wid.max()) + 1
+    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n))
     k, lab = connected_components(g, directed=False)
     if k == 1:
-        return p, c, f
+        return p, c, f, uv
     t = p[f]
     ar = np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1) / 2
-    fl = lab[f[:, 0]]
+    fl = lab[fw[:, 0]]
     area = np.zeros(k)
     np.add.at(area, fl, ar)
     keep = area[fl] >= min_area
     if keep.all():
-        return p, c, f
+        return p, c, f, uv
     f = f[keep]
     if len(f) == 0:
-        return p[:0], c[:0], f
+        return p[:0], c[:0], f, (None if uv is None else uv[:0])
     used, remap = np.unique(f, return_inverse=True)
-    return p[used], c[used], remap.reshape(-1, 3)
+    return (p[used], c[used], remap.reshape(-1, 3),
+            None if uv is None else uv[used])
 
 
 def wall_sides(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
@@ -234,7 +311,7 @@ def _b64(a: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
 
 
-def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
+def build(bundle: str | Path, face_budget: int | None = None) -> dict:
     """バンドルから部品つきの 3D を組む。`room.json` が無ければ部屋 1 個。"""
     bundle = Path(bundle)
     glb = bundle / "mesh_vc.glb"
@@ -245,6 +322,26 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
     cf = bundle / "mesh_class.bin"
     if cf.exists():
         cls = np.frombuffer(cf.read_bytes(), dtype=np.uint8)
+
+    # **テクスチャ付きがあればそちらを使う。** 色の密度が面積あたり 235 倍
+    # （頂点カラー 40.5mm 間隔 に対し 2.64mm/texel）。
+    #
+    # ただし mesh.glb は UV の継ぎ目で頂点を割っているぶん並びが違う。面の
+    # 並びも一致しない（面数と面積は同じでも重心の差が中央値 1.0m）ので、
+    # mesh_class.bin（mesh.ply の並び）をそのままは使えない。同じ形なので
+    # **位置と重心で引き直す。**
+    UV = None
+    tex = read_textured(bundle / "mesh.glb")
+    if tex is not None and len(tex[2]) == len(F):
+        Vt, UV, Ft = tex
+        C = C[cKDTree(V).query(Vt)[1]]
+        if cls is not None:
+            cls = cls[cKDTree(V[F].mean(axis=1)).query(Vt[Ft].mean(axis=1))[1]]
+        V, F = Vt, Ft
+    else:
+        UV = None
+    if face_budget is None:
+        face_budget = TEXTURED_FACE_BUDGET if UV is not None else FACE_BUDGET
 
     room_json = bundle / "room.json"
     if room_json.exists():
@@ -313,7 +410,8 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
         sel = assigned == i
         if sel.sum() < 30:
             continue
-        p, c, f = drop_small(*cluster(Vl, C, F[sel], OBJECT_CELL))
+        p, c, f, u = drop_small(*cluster(Vl, C, F[sel], OBJECT_CELL,
+                                         UV=UV))
         if len(f) == 0:
             continue
         cxz = np.array([b.center[0], b.center[2]]) @ R.T
@@ -338,6 +436,8 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
             faces=len(f),
             pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
             idx=_b64(f.astype("<u4"))))
+        if u is not None:
+            parts[-1]["uv"] = _b64(u.astype("<f4"))
         used_faces += len(f)
 
     # **壁は家具と同じく別の部品に切り出す。** 部品ごとに間引くので壁は自分
@@ -354,25 +454,31 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
 
     room = F[rest]
     for cell in ROOM_CELLS:
-        groups = [drop_small(*cluster(Vl, C, room, cell))]
+        groups = [drop_small(*cluster(Vl, C, room, cell, UV=UV))]
         for _, sel in wall_sel:
-            groups.append(drop_small(*cluster(Vl, C, F[sel], cell)))
+            groups.append(drop_small(*cluster(Vl, C, F[sel], cell, UV=UV)))
         total = sum(len(g[2]) for g in groups)
         if total + used_faces <= face_budget:
             break
-    p, c, f = groups[0]
-    for (k, _), (wp, wc, wf) in zip(wall_sel, groups[1:]):
+    p, c, f, u = groups[0]
+    for (k, _), (wp, wc, wf, wu) in zip(wall_sel, groups[1:]):
         if len(wf) == 0:
             continue
         wid, a, b = wall_lines[k]
-        parts.insert(0, dict(id=f"__wall__{wid}", label=f"壁 {wid}", kind="wall",
-                             wall=wid, a=a, b=b, faces=len(wf),
-                             pos=_b64(wp.astype("<f4")),
-                             col=_b64(wc.round().astype("u1")),
-                             idx=_b64(wf.astype("<u4"))))
-    parts.insert(0, dict(id="__room__", label="部屋", kind="room", faces=len(f),
-                         pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
-                         idx=_b64(f.astype("<u4"))))
+        part = dict(id=f"__wall__{wid}", label=f"壁 {wid}", kind="wall",
+                    wall=wid, a=a, b=b, faces=len(wf),
+                    pos=_b64(wp.astype("<f4")),
+                    col=_b64(wc.round().astype("u1")),
+                    idx=_b64(wf.astype("<u4")))
+        if wu is not None:
+            part["uv"] = _b64(wu.astype("<f4"))
+        parts.insert(0, part)
+    rp = dict(id="__room__", label="部屋", kind="room", faces=len(f),
+              pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
+              idx=_b64(f.astype("<u4")))
+    if u is not None:
+        rp["uv"] = _b64(u.astype("<f4"))
+    parts.insert(0, rp)
 
     return dict(parts=parts,
                 extent=[round(float(rot[:, 0].max() - x0), 3),
@@ -385,4 +491,5 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
                 walls=[dict(id=i, a=a, b=b, inSide=sd)
                        for (i, a, b), sd in zip(wall_lines,
                                                 wall_sides(Vl, F, cls, wall_lines))],
-                hasClass=cls is not None)
+                hasClass=cls is not None,
+                textured=UV is not None)

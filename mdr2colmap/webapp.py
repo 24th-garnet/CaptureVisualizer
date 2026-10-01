@@ -341,6 +341,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _atlas(self, bundle: Path) -> None:
+        """テクスチャのアトラスを渡す。
+
+        **base64 で geom に混ぜない。** 3.5MB が 4.7MB に膨らむうえ、画像として
+        別に取れば browser のキャッシュに乗る。
+        """
+        got = webgeom.atlas_bytes(bundle / "mesh.glb")
+        if got is None:
+            return self._json({"error": "テクスチャが無い"}, 404)
+        body, mime = got
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _dxf(self, bundle: Path) -> None:
         """平面図を DXF で渡す。**編集後と家具の配置を反映した形で出す。**
 
@@ -404,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(_read_json(bundle / "moves.json") or {"moved": []})
                 if what == "dxf":
                     return self._dxf(bundle)
+                if what == "atlas":
+                    return self._atlas(bundle)
                 if what == "file" and len(rest) > 2:
                     return self._file(bundle / rest[2])
             self._json({"error": "そんな道は無い"}, 404)

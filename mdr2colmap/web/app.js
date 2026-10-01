@@ -483,15 +483,12 @@ function drawPlan() {
 const WALK_EYE = 1.6;        // 目の高さ（m）
 const WALK_SPEED = 1.4;      // 歩く速さ（m/秒）
 const WALK_RADIUS = 0.3;     // 体の半径。壁へのめり込みを止める
-const WALK_STEP_UP = 0.4;    // 登れる段差
-const WALK_PROBE = [0.35, 1.0, 1.45];   // 当たりを見る高さ
+const WALK_LOW = 0.25;       // これより低い家具は跨げる
 let walking = false;
 let walkCam = null, walkMark = null;
 let walkPos = { x: 0, y: 0, z: 0 };     // 足元
 let walkYaw = 0, walkPitch = 0, walkLast = 0;
 const walkKeys = new Set();
-let _walkRay = null;
-const walkRay = () => (_walkRay || (_walkRay = new THREE.Raycaster()));
 
 let overlay = null;          // 編集後の壁を立体にしたもの（図面の側）
 let showOverlay = true;
@@ -507,6 +504,8 @@ let followWalls = true;
 let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
 let materials = [];          // 裏面の扱いを一括で切り替えるため
 let cullBack = true;
+let useTex = true;           // テクスチャで描くか、頂点カラーで描くか
+let atlas = null;            // 共有のアトラス。全部品で 1 枚
 let boxes = new Map();       // RoomPlan の境界箱（線分）
 const cssColor = name =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -579,6 +578,17 @@ async function loadGeom(id) {
   scene.children.filter(o => o.isMesh).forEach(o => scene.remove(o));
   const g = await api(`/api/scans/${id}/geom`);
   if (id !== current) return;                 // 別のスキャンへ移った
+  if (atlas) { atlas.dispose(); atlas = null; }
+  if (g.textured) {
+    atlas = new THREE.TextureLoader().load(`/api/scans/${id}/atlas`, () => {
+      for (const m of materials) if (m.map) m.needsUpdate = true;
+      draw();
+    });
+    // **v は画像の上から数える並び**（実測で v=0 が 0 行目に一致）。
+    // three.js の既定は画像を上下反転して載せるので、それを外す。
+    atlas.flipY = false;
+    atlas.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  }
   if (g.error) {
     document.getElementById('gl-note').textContent = g.error;
     return;
@@ -601,9 +611,12 @@ async function loadGeom(id) {
     // **裏面を描かない。** ARKit のメッシュは法線が室内側を向くので、
     // 外から見ると手前の壁が消えて中が見える。両面で描くと箱の外側しか
     // 見えず、間取りの確認に使えない。
-    const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      vertexColors: true, side: cullBack ? THREE.FrontSide : THREE.DoubleSide }));
-    materials.push(mesh.material);
+    if (part.uv) geo.setAttribute('uv', new THREE.BufferAttribute(dec(part.uv, Float32Array), 2));
+    const mat = new THREE.MeshLambertMaterial({
+      side: cullBack ? THREE.FrontSide : THREE.DoubleSide });
+    applySkin(mat, !!part.uv);
+    const mesh = new THREE.Mesh(geo, mat);
+    materials.push(mat);
     entry.mesh = mesh;
     if (part.kind === 'wall') {
       wallParts.push({ id: part.wall, geo, mesh,
@@ -855,12 +868,6 @@ function clipParts() {
 
 // --- 歩き回る -----------------------------------------------------------
 
-/** 当たり判定に使うメッシュ。**見えているものだけ。**
-    消した壁は見えないので通り抜けられる。編集した結果の中を歩ける。 */
-function walkTargets() {
-  return allParts.filter(p => p.mesh && p.mesh.visible).map(p => p.mesh);
-}
-
 /** 立ち位置を決める。**家具と壁から最も離れた場所。**
     部屋の中心は家具の中のことがある（実測でベッドが中心寄りだった）。
     平面図に箱があるので、光線を飛ばさずに空いている場所を選べる。 */
@@ -892,37 +899,47 @@ function walkSpawn() {
   return { x: best[0], z: best[1], yaw };
 }
 
-/** 足元の床。光線が当たらなければ Y=0（webgeom が揃えた床面）。 */
-function walkGround(x, z) {
-  const t = walkTargets();
-  if (t.length) {
-    walkRay().set(new THREE.Vector3(x, walkPos.y + 0.6, z), new THREE.Vector3(0, -1, 0));
-    walkRay().far = 3;
-    let g = null;
-    for (const h of walkRay().intersectObjects(t, false)) {
-      const y = h.point.y;
-      if (y > walkPos.y + WALK_STEP_UP) continue;   // 登れない高さは床でない
-      g = g === null ? y : Math.max(g, y);
-    }
-    if (g !== null) return g;
-  }
-  return 0;
-}
+/** 進めるかを**平面図に対して**見る。メッシュには当てない。
 
-/** その向きへ進めるか。腰・胸・頭の高さで見る。 */
+    three.js の Raycaster は BVH を持たず総当たりなので、面数がそのまま効く。
+    実測で 1 フレーム 7 本の光線に 67,446 面で 13.81ms、167,281 面なら 33.58ms
+    かかり、テクスチャ版にすると歩けなくなる。平面図なら壁 4 枚と家具 4 個の
+    計 8 個で済み、実質ゼロになる。
+
+    速いだけでなく確かでもある。床は 67.7% しか撮れておらず（ベッドの下は
+    7%）、メッシュに当てると穴を抜ける。
+
+    代わりに、平面図に無いもの（突き出したエアコン、段差）は止めない。 */
 function walkBlocked(x, z, dx, dz) {
-  const t = walkTargets();
-  if (!t.length) return false;
-  const d = Math.hypot(dx, dz);
-  if (d < 1e-9) return false;
-  const dir = new THREE.Vector3(dx / d, 0, dz / d);
-  for (const h of WALK_PROBE) {
-    walkRay().set(new THREE.Vector3(x, walkPos.y + h, z), dir);
-    walkRay().far = d + WALK_RADIUS;
-    const hits = walkRay().intersectObjects(t, false);
-    if (hits.length && hits[0].distance < d + WALK_RADIUS) return true;
+  if (!plan) return false;
+  const nx = x + dx, nz = z + dz;
+  for (const w of plan.walls) {
+    const f = frameOf(w.a, w.b);
+    const lim = (w.thickness || 0.12) / 2 + WALK_RADIUS;
+    const qx = nx - f.a[0], qz = nz - f.a[1];
+    const sv = Math.max(0, Math.min(f.L, qx * f.u[0] + qz * f.u[1]));
+    if (Math.hypot(nx - (f.a[0] + f.u[0] * sv), nz - (f.a[1] + f.u[1] * sv)) < lim)
+      return true;
+  }
+  for (const o of (plan.objects || [])) {
+    if ((o.h || 0) < WALK_LOW) continue;      // ラグのような低い物は跨げる
+    const m = state.get(o.id) || { dx: 0, dz: 0, dyaw: 0 };
+    const cx = o.c[0] + m.dx, cz = o.c[1] + m.dz;
+    const th = (o.yaw + m.dyaw) * Math.PI / 180;
+    const ux = Math.cos(th), uz = Math.sin(th);
+    const px = nx - cx, pz = nz - cz;
+    if (Math.abs(px * ux + pz * uz) < o.w / 2 + WALK_RADIUS
+        && Math.abs(-px * uz + pz * ux) < o.d / 2 + WALK_RADIUS) return true;
   }
   return false;
+}
+
+/** 床の高さ。**平面図は高さを持たないので 0 で固定する。**
+
+    webgeom が床を Y=0 へ揃えており、実測でスキャンの床面は +0.0155m
+    （標準偏差 0.0225）。段差のある家や複数階は歩けない。 */
+function walkGround() {
+  return 0;
 }
 
 function walkStep(dt) {
@@ -942,7 +959,7 @@ function walkStep(dt) {
     if (!walkBlocked(walkPos.x, walkPos.z, wx * k, 0)) walkPos.x += wx * k;
     if (!walkBlocked(walkPos.x, walkPos.z, 0, wz * k)) walkPos.z += wz * k;
   }
-  walkPos.y = walkGround(walkPos.x, walkPos.z);
+  walkPos.y = walkGround();
   walkCam.position.set(walkPos.x, walkPos.y + WALK_EYE, walkPos.z);
   walkCam.rotation.set(walkPitch, walkYaw, 0, 'YXZ');
   if (walkMark) {
@@ -1007,6 +1024,19 @@ window.addEventListener('keyup', e => {
   const k = WALK_KEYMAP[e.code];
   if (k) walkKeys.delete(k);
 });
+
+/** 材質の着せ替え。テクスチャか頂点カラーか。
+
+    色空間はどちらも触らない。頂点カラーは u1 を 0..1 に正規化してそのまま
+    使っており、JPEG も同じ扱いになる。**片方だけ sRGB を宣言すると明るさが
+    食い違う**ので、揃えないことで揃える。 */
+function applySkin(mat, hasUV) {
+  const on = useTex && hasUV && atlas;
+  mat.map = on ? atlas : null;
+  mat.vertexColors = !on;
+  mat.color.setHex(0xffffff);
+  mat.needsUpdate = true;
+}
 
 function addBox(part) {
   const b = part.box, pts = b.pts, y0 = b.y0, y1 = b.y0 + b.h, v = [];
@@ -1277,6 +1307,11 @@ document.getElementById('cull').onchange = e => {
     m.side = cullBack ? THREE.FrontSide : THREE.DoubleSide;
     m.needsUpdate = true;
   }
+  draw();
+};
+document.getElementById('tex').onchange = e => {
+  useTex = e.target.checked;
+  for (const p of allParts) if (p.mesh) applySkin(p.mesh.material, !!p.geo.attributes.uv);
   draw();
 };
 document.getElementById('overlay').onchange = e => {
