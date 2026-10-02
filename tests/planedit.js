@@ -964,17 +964,27 @@ ok('戻すと案内も戻る', els['walktip'].textContent.indexOf('W A S D') >= 
 ok('十字も戻る', els['walkhud'].classList.contains('commenting') === false);
 
 // 入力の受け渡し。**ポインタの固定を外さないと文字が打てない。**
-var unlocked = false;
-document.exitPointerLock = function () { unlocked = true; };
+var unlocked = 0, relocked = 0;
+document.exitPointerLock = function () { unlocked++; document.pointerLockElement = null; };
+els['gl'].requestPointerLock = function () { relocked++; document.pointerLockElement = els['gl']; };
 document.pointerLockElement = els['gl'];
+walking = true;
 askComment([1, 2, 3]);
 ok('場所を覚える', JSON.stringify(cmtPending) === '[1,2,3]');
 ok('入力欄が出る', els['cmtbox'].hidden === false);
-ok('ポインタの固定を外す', unlocked === true);
-walking = false;
+ok('ポインタの固定を外す', unlocked === 1);
+ok('外れている間は固定されていない', locked() === false);
+// **書き終えたら即座に奪い返す。**
 closeComment();
 ok('やめれば場所を忘れる', cmtPending === null);
 ok('入力欄は隠れる', els['cmtbox'].hidden === true);
+ok('すぐ固定を取り戻す', relocked >= 1 && locked() === true, 'relocked=' + relocked);
+// 歩いていなければ取り戻さない
+walking = false;
+relocked = 0;
+closeComment();
+ok('歩いていなければ取り戻さない', relocked === 0);
+walking = false; document.pointerLockElement = null;
 
 // 平面図に出る
 comments = [{ id: 'a', p: [1.0, 1.2, 2.0], text: 'あ', at: '' },

@@ -588,6 +588,8 @@ function initGL() {
   // 置いたままとする）。
   canvas.addEventListener('pointerdown', e => {
     if (walking) {
+      // 固定が外れていたら、まず取り戻す（コメントは置かない）。
+      if (!locked()) { lockPointer(); return; }
       // コメントモードなら、十字の先に印を置く。
       if (commenting && !cmtPending) {
         const p = aimPoint();
@@ -1141,14 +1143,10 @@ function closeComment() {
   cmtPending = null;
   document.getElementById('cmtbox').hidden = true;
   if (!walking) return;
-  if (canvas.requestPointerLock) canvas.requestPointerLock();
-  // **固定が戻らないことがある。** 外した直後の再要求は ブラウザに断られる
-  // （短い待ちを置く実装がある）。戻らなければ案内を出し直す。
-  setTimeout(() => {
-    if (walking && document.pointerLockElement !== canvas) {
-      document.getElementById('walkstart').hidden = false;
-    }
-  }, 200);
+  lockPointer();                            // 書き終えたら即座に奪い返す
+  // **断られることがある。** 外した直後の再要求をブラウザが拒むことがあるの
+  // で、少し置いてもう一度試す。それでも駄目なら次のクリックで取り戻す。
+  setTimeout(lockPointer, 180);
 }
 
 /** 近くのコメントを吹き出しで出す。離れたら消す。
@@ -1203,10 +1201,17 @@ function enterWalk() {
   document.getElementById('walk').textContent = '戻る';
   resizeGL();
   drawPlan();                               // 立ち位置の印を出す
-  // **ここでは固定しない。** 3D の上を押させてから固定することで、外したとき
-  // にカーソルが 3D の上へ戻る（固定した場所へ戻るため）。「歩く」ボタンの
-  // 上で固定すると、コメントを書くときにカーソルが枠の外に現れる。
-  document.getElementById('walkstart').hidden = false;
+  lockPointer();                            // すぐ乗っ取る
+}
+
+/** ポインタを乗っ取る。**コメントのときだけ返し、終わったら奪い返す。** */
+function lockPointer() {
+  if (walking && canvas.requestPointerLock) canvas.requestPointerLock();
+}
+
+/** 固定されているか。外れていたら、次のクリックで取り戻す。 */
+function locked() {
+  return document.pointerLockElement === canvas;
 }
 
 function exitWalk() {
@@ -1217,7 +1222,6 @@ function exitWalk() {
   walkKeys.clear();
   document.getElementById('stage3d').classList.remove('walking');
   document.getElementById('walkhud').hidden = true;
-  document.getElementById('walkstart').hidden = true;
   hideCmtPops();
   document.getElementById('walk').textContent = '歩く';
   if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -1227,18 +1231,11 @@ function exitWalk() {
 }
 
 document.addEventListener('pointerlockchange', () => {
-  if (!walking) return;
-  if (document.pointerLockElement === canvas) {
-    document.getElementById('walkstart').hidden = true;
-    return;
-  }
+  if (!walking || locked()) return;
   if (cmtPending) return;                    // 文を書いている間は外れていてよい
   // Esc で外れたら歩くのをやめる。掴んだままにすると操作不能になる。
   exitWalk();
 });
-document.getElementById('walkstart').onclick = () => {
-  if (walking && canvas.requestPointerLock) canvas.requestPointerLock();
-};
 document.addEventListener('mousemove', e => {
   if (!walking || document.pointerLockElement !== canvas) return;
   walkYaw -= e.movementX * 0.0022;
