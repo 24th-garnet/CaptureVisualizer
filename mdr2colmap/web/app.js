@@ -94,6 +94,8 @@ async function select(id) {
   if (plan.error) { setStatus(plan.error, true); return; }
   showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
+  const cm = await api(`/api/scans/${id}/comments`);
+  comments = (cm && cm.comments) || [];
   replaceMap = {};                 // その場限り。スキャンを選び直せば戻る
   for (const [, n] of replaceNodes) if (scene) scene.remove(n);
   replaceNodes = new Map();
@@ -450,6 +452,17 @@ function drawPlan() {
     }
   }
 
+  if (comments.length) {
+    // コメント。図面の記号ではないので、操作の層に置く。番号は一覧と揃える。
+    const cg = el('g', {});
+    comments.forEach((c, i) => {
+      const [cx, cy] = toScreen([c.p[0], c.p[2]]);
+      const n = el('g', { class: 'cmt', transform: `translate(${cx} ${cy})` }, cg);
+      el('circle', { cx: 0, cy: 0, r: 0.09 }, n);
+      el('text', { x: 0, y: 0.005 }, n).textContent = String(i + 1);
+    });
+  }
+
   if (walking) {
     // 立ち位置。図面の記号ではないので、編集のつまみと同じく操作の層に置く。
     walkMark = el('g', { class: 'walkmark' });
@@ -490,6 +503,17 @@ const WALK_EYE = 1.6;        // 目の高さ（m）
 const WALK_SPEED = 1.4;      // 歩く速さ（m/秒）
 const WALK_RADIUS = 0.3;     // 体の半径。壁へのめり込みを止める
 const WALK_LOW = 0.25;       // これより低い家具は跨げる
+/* コメント。歩きながら、見ている先に書き留める。
+   **置換と違って残す。** 人が書いた内容であって、試しの表示ではない。
+   位置は 3D と平面図が共有する枠で持つので、平面図にも同じ座標で出せる。 */
+let commenting = false;      // コメントモード
+let comments = [];           // [{id, p:[x,y,z], text, at}]
+let cmtPending = null;       // 置く場所が決まり、文を待っている
+let cmtRoot = null;          // 3D の印
+/* 光線はコメントのときだけ使う（歩く当たり判定は平面図に移した）。
+   **module 直下で作らない。** three.js が読めないときに app.js 全体が死ぬ。 */
+let _walkRay = null;
+const walkRay = () => (_walkRay || (_walkRay = new THREE.Raycaster()));
 let walking = false;
 let walkCam = null, walkMark = null;
 let walkPos = { x: 0, y: 0, z: 0 };     // 足元
@@ -560,7 +584,15 @@ function initGL() {
   // 見ている数値と食い違う。鉛直方向の移動も持たない（家具は床に
   // 置いたままとする）。
   canvas.addEventListener('pointerdown', e => {
-    if (walking) return;                      // 歩いている間は視点を掴まない
+    if (walking) {
+      // コメントモードなら、十字の先に印を置く。
+      if (commenting && !cmtPending) {
+        const p = aimPoint();
+        if (p) askComment(p);
+        else setStatus('その先に面がありません', true);
+      }
+      return;                                 // 歩いている間は視点を掴まない
+    }
     canvas.setPointerCapture(e.pointerId);
     orbit = { x: e.clientX, y: e.clientY, t: cam.theta, p: cam.phi, moved: false };
   });
@@ -666,6 +698,8 @@ async function loadGeom(id) {
   document.getElementById('walk').disabled = false;
   updateOverlay();                            // initGL の後でないと作れない
   buildShell();
+  drawComments();
+  listComments();
   applyReplacements();
   moveWalls();
   clipParts();
@@ -1001,6 +1035,114 @@ function walkStep(dt) {
   }
 }
 
+// --- コメント ---------------------------------------------------------------
+
+/** 十字の先にある面。**1 本だけ飛ばす。** 歩くときの当たり判定は平面図に
+    移したが、コメントは「どの面に付けたか」が要るのでメッシュに当てる。
+    1 本なら 94,000 面でも 2ms ほどで、押した瞬間だけの費用で済む。 */
+function aimPoint() {
+  if (!walkCam) return null;
+  const targets = [];
+  for (const p of allParts) if (p.mesh && p.mesh.visible) targets.push(p.mesh);
+  if (shell) for (const m of shell.children) targets.push(m);
+  for (const [, n] of replaceNodes) n.traverse(o => { if (o.isMesh) targets.push(o); });
+  if (!targets.length) return null;
+  const r = walkRay();
+  r.far = 40;
+  r.setFromCamera({ x: 0, y: 0 }, walkCam);     // 画面の中心＝十字
+  const hits = r.intersectObjects(targets, false);
+  if (!hits.length) return null;
+  const q = hits[0].point;
+  return [+q.x.toFixed(4), +q.y.toFixed(4), +q.z.toFixed(4)];
+}
+
+/** 3D の印を作り直す。常に見えるようにする（壁の向こうでも数は分かる）。 */
+function drawComments() {
+  if (cmtRoot && scene) {
+    scene.remove(cmtRoot);
+    cmtRoot.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    cmtRoot = null;
+  }
+  if (!renderer || !scene || !comments.length) return;
+  const g = new THREE.Group();
+  const geo = new THREE.SphereGeometry(0.06, 12, 10);
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(cssColor('--shu')), depthTest: false });
+  for (const c of comments) {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(c.p[0], c.p[1], c.p[2]);
+    m.renderOrder = 999;                        // 壁に隠れても見える
+    g.add(m);
+  }
+  cmtRoot = g;
+  scene.add(g);
+}
+
+function listComments() {
+  const ul = document.getElementById('cmtlist');
+  if (!ul) return;
+  ul.innerHTML = '';
+  comments.forEach((c, i) => {
+    const li = document.createElement('li');
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = String(i + 1);
+    const t = document.createElement('span');
+    t.textContent = c.text;
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '消す';
+    x.onclick = async () => {
+      comments = comments.filter(v => v.id !== c.id);
+      await saveComments();
+    };
+    li.append(n, t, x);
+    ul.appendChild(li);
+  });
+}
+
+async function saveComments() {
+  if (current) {
+    await api(`/api/scans/${current}/comments`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ comments }) });
+  }
+  drawComments();
+  listComments();
+  drawPlan();
+  draw();
+}
+
+function setCommenting(on) {
+  commenting = on && walking;
+  const hud = document.getElementById('walkhud');
+  if (hud) hud.classList.toggle('commenting', commenting);
+  const tip = document.getElementById('walktip');
+  if (tip) {
+    tip.textContent = commenting
+      ? '見ている先をクリックして書き留める　C で歩くモードへ戻る'
+      : 'W A S D / 矢印で移動　マウスで見回す　C でコメント　Esc で戻る';
+  }
+}
+
+/** 文を入れてもらう。**ポインタの固定はいったん外す。**
+    固定したままでは入力欄に文字を打てない。 */
+function askComment(p) {
+  cmtPending = p;
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  const box = document.getElementById('cmtbox');
+  const input = document.getElementById('cmtText');
+  box.hidden = false;
+  input.value = '';
+  input.focus();
+}
+
+function closeComment() {
+  cmtPending = null;
+  document.getElementById('cmtbox').hidden = true;
+  if (walking && canvas.requestPointerLock) canvas.requestPointerLock();
+}
+
 function enterWalk() {
   if (!renderer || !plan || walking) return;
   if (!walkCam) walkCam = new THREE.PerspectiveCamera(75, 1, 0.03, 100);
@@ -1020,7 +1162,9 @@ function enterWalk() {
 
 function exitWalk() {
   if (!walking) return;
+  if (cmtPending) return;                      // 文を書いている間は出ない
   walking = false;
+  setCommenting(false);
   walkKeys.clear();
   document.getElementById('stage3d').classList.remove('walking');
   document.getElementById('walkhud').hidden = true;
@@ -1046,8 +1190,10 @@ const WALK_KEYMAP = { KeyW: 'f', ArrowUp: 'f', KeyS: 'b', ArrowDown: 'b',
                       KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r' };
 window.addEventListener('keydown', e => {
   if (!walking) return;
+  if (cmtPending) return;                      // 入力中はここで食べない
   const k = WALK_KEYMAP[e.code];
   if (k) { walkKeys.add(k); e.preventDefault(); }
+  else if (e.code === 'KeyC') { setCommenting(!commenting); e.preventDefault(); }
   else if (e.key === 'Escape') exitWalk();
 });
 window.addEventListener('keyup', e => {
@@ -1651,6 +1797,23 @@ document.getElementById('follow').onchange = e => {
   moveWalls(); clipParts(); draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
+document.getElementById('cmtbox').addEventListener('submit', async e => {
+  e.preventDefault();
+  const t = document.getElementById('cmtText').value.trim();
+  const p = cmtPending;
+  closeComment();
+  if (!t || !p) return;
+  comments.push({ id: `c${Date.now().toString(36)}${comments.length}`,
+                  p, text: t, at: new Date().toISOString() });
+  await saveComments();
+  setStatus(`コメントを付けました（${comments.length} 件）`);
+});
+document.getElementById('cmtCancel').onclick = () => closeComment();
+document.getElementById('cmtText').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); closeComment(); }
+  e.stopPropagation();                        // 歩く操作に流さない
+});
+
 document.getElementById('walk').onclick = () => (walking ? exitWalk() : enterWalk());
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };
 document.getElementById('reload').onclick = loadList;

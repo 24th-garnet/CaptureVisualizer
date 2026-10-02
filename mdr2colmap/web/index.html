@@ -74,8 +74,13 @@
             <p class="loading" id="gl-note" hidden></p>
             <div class="walkhud" id="walkhud" hidden>
               <span class="cross"></span>
-              <p>W A S D / 矢印で移動　マウスで見回す　Esc で戻る</p>
-            </div></div>
+              <p id="walktip">W A S D / 矢印で移動　マウスで見回す　C でコメント　Esc で戻る</p>
+            </div>
+            <form class="cmtbox" id="cmtbox" hidden>
+              <input id="cmtText" maxlength="2000" placeholder="ここに何を書き留めますか">
+              <button type="submit">付ける</button>
+              <button type="button" id="cmtCancel">やめる</button>
+            </form></div>
         </section>
       </div>
 
@@ -105,6 +110,8 @@
         <section>
           <h3>諸元</h3>
           <dl class="facts" id="facts"></dl>
+          <h3 style="margin-top:18px">コメント</h3>
+          <ul class="cmtlist" id="cmtlist"></ul>
         </section>
       </div>
     </div>

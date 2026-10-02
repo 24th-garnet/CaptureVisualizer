@@ -2,8 +2,23 @@
 // ブラウザが無い環境でも、壁を動かしたときの開口の挙動を押さえておきたい。
 function Node(tag) {
   this.tag = tag; this.attrs = {}; this.kids = []; this._text = ''; this.dataset = {};
-  this.classList = { toggle: function(){}, add: function(){}, contains: function(){return false;} };
+  this.value = ''; this.hidden = false;
+  this.focus = function () { this.focused = true; };
+  var cls = {};
+  this.classList = {
+    add: function (c) { cls[c] = true; },
+    remove: function (c) { delete cls[c]; },
+    contains: function (c) { return !!cls[c]; },
+    toggle: function (c, on) {
+      if (on === undefined) on = !cls[c];
+      if (on) cls[c] = true; else delete cls[c];
+      return !!cls[c];
+    }
+  };
 }
+Node.prototype.append = function () {
+  for (var i = 0; i < arguments.length; i++) this.kids.push(arguments[i]);
+};
 Node.prototype.setAttribute = function(k, v) { this.attrs[k] = v; };
 Node.prototype.getAttribute = function(k) { return this.attrs[k]; };
 Node.prototype.appendChild = function(n) { this.kids.push(n); return n; };
@@ -924,5 +939,53 @@ replaceMap = {};
 drawPlan();
 ok('戻せば印は消える',
    (objNodes.get(plan.objects[0].id).attrs['class'] || '').indexOf('swap') < 0);
+
+
+// --- コメント ---------------------------------------------------------------
+comments = [];
+walking = false; commenting = false; cmtPending = null;
+setCommenting(true);
+ok('歩いていなければコメントモードに入らない', commenting === false);
+walking = true;
+setCommenting(true);
+ok('歩いていれば入れる', commenting === true);
+ok('十字の見た目が変わる', els['walkhud'].classList.contains('commenting') === true);
+ok('案内が切り替わる', els['walktip'].textContent.indexOf('クリック') >= 0,
+   els['walktip'].textContent);
+setCommenting(false);
+ok('戻すと案内も戻る', els['walktip'].textContent.indexOf('W A S D') >= 0);
+ok('十字も戻る', els['walkhud'].classList.contains('commenting') === false);
+
+// 入力の受け渡し。**ポインタの固定を外さないと文字が打てない。**
+var unlocked = false;
+document.exitPointerLock = function () { unlocked = true; };
+document.pointerLockElement = els['gl'];
+askComment([1, 2, 3]);
+ok('場所を覚える', JSON.stringify(cmtPending) === '[1,2,3]');
+ok('入力欄が出る', els['cmtbox'].hidden === false);
+ok('ポインタの固定を外す', unlocked === true);
+walking = false;
+closeComment();
+ok('やめれば場所を忘れる', cmtPending === null);
+ok('入力欄は隠れる', els['cmtbox'].hidden === true);
+
+// 平面図に出る
+comments = [{ id: 'a', p: [1.0, 1.2, 2.0], text: 'あ', at: '' },
+            { id: 'b', p: [2.0, 0.5, 0.5], text: 'い', at: '' }];
+drawPlan();
+var marks = 0;
+(function count(n) {
+  if ((n.attrs['class'] || '') === 'cmt') marks++;
+  n.kids.forEach(count);
+})(els['plan']);
+ok('平面図に件数ぶん出る', marks === 2, 'n=' + marks);
+comments = [];
+drawPlan();
+marks = 0;
+(function count(n) {
+  if ((n.attrs['class'] || '') === 'cmt') marks++;
+  n.kids.forEach(count);
+})(els['plan']);
+ok('無ければ出ない', marks === 0);
 
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

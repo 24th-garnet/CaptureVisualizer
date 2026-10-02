@@ -236,3 +236,49 @@ def test_asset_list_ignores_other_files(tmp_path):
     (tmp_path / "broken.glb").write_bytes(b"nope")
     assert webapp.asset_list(tmp_path) == []
     assert webapp.asset_list(tmp_path / "missing") == []
+
+
+def test_comments_are_kept(tmp_path):
+    """コメントは残す。**置換と違い、人が書いた内容。**"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-c.mdr"
+    b.mkdir()
+    (b / "manifest.json").write_text("{}")
+    assert webapp.summary(b)["comments"] == 0
+    r = webapp.save_comments(b, {"comments": [
+        {"id": "c1", "p": [1.0, 1.2, 2.0], "text": "壁紙が剥がれている", "at": "x"}]})
+    assert r == {"ok": True, "count": 1}
+    assert webapp.summary(b)["comments"] == 1
+    got = json.loads((b / webapp.COMMENT_FILE).read_text())
+    assert got["comments"][0]["text"] == "壁紙が剥がれている"
+    assert got["comments"][0]["p"] == [1.0, 1.2, 2.0]
+
+
+def test_malformed_comments_are_dropped(tmp_path):
+    """位置の無いものは捨てる。平面図と 3D に同じ座標で出すので要る。"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-d.mdr"
+    b.mkdir()
+    r = webapp.save_comments(b, {"comments": [
+        {"id": "a", "text": "位置が無い"},
+        {"id": "b", "p": [1, 2], "text": "足りない"},
+        {"id": "c", "p": [1, 2, 3], "text": "よい"}]})
+    assert r["count"] == 1
+
+
+def test_comment_text_is_capped(tmp_path):
+    from mdr2colmap import webapp
+    b = tmp_path / "room-e.mdr"
+    b.mkdir()
+    webapp.save_comments(b, {"comments": [
+        {"id": "a", "p": [0, 0, 0], "text": "あ" * 5000}]})
+    got = json.loads((b / webapp.COMMENT_FILE).read_text())
+    assert len(got["comments"][0]["text"]) == webapp.MAX_COMMENT_LEN
+
+
+def test_too_many_comments_are_capped(tmp_path):
+    from mdr2colmap import webapp
+    b = tmp_path / "room-f.mdr"
+    b.mkdir()
+    many = [{"id": str(i), "p": [0, 0, 0], "text": "x"} for i in range(900)]
+    assert webapp.save_comments(b, {"comments": many})["count"] == webapp.MAX_COMMENTS
