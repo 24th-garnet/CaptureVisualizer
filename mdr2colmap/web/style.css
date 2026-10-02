@@ -16,6 +16,9 @@
   }
 }
 * { box-sizing: border-box; }
+/* **hidden 属性を効かせる。** `[hidden]{display:none}` は UA の規定なので、
+   クラスで display を指定すると負ける。実際に入力欄が出しっぱなしになった。 */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--ground); color: var(--ink);
        font-family: var(--jp); line-height: 1.6; }
 button { font-family: var(--mono); font-size: 12.5px; color: var(--soft);

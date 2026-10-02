@@ -282,3 +282,17 @@ def test_too_many_comments_are_capped(tmp_path):
     b.mkdir()
     many = [{"id": str(i), "p": [0, 0, 0], "text": "x"} for i in range(900)]
     assert webapp.save_comments(b, {"comments": many})["count"] == webapp.MAX_COMMENTS
+
+
+def test_hidden_attribute_is_not_overridden_by_display():
+    """`hidden` を付けた要素が、クラスの `display` に負けないこと。
+
+    `[hidden]{display:none}` は UA の規定なので、`.cmtbox{display:flex}` の
+    ような指定があると勝ってしまい、隠したはずの入力欄が出たままになる。
+    """
+    from mdr2colmap import webapp
+    css = (webapp.WEB_ROOT / "style.css").read_text()
+    html = (webapp.WEB_ROOT / "index.html").read_text()
+    assert "[hidden]" in css and "display: none !important" in css
+    # hidden を付けている要素が display を指定しているなら、上の規則が要る
+    assert html.count("hidden>") + html.count('hidden ') >= 4
