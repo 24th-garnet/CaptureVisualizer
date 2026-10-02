@@ -42,18 +42,12 @@ WEB_ROOT = Path(__file__).parent / "web"
 _build_lock = threading.Lock()
 #: 合言葉を載せる cookie の名前。
 COOKIE = "madoriba_token"
-#: コメントの上限。手元の道具なので緩くてよいが、青天井にはしない。
-MAX_COMMENTS = 500
-MAX_COMMENT_LEN = 2000
 #: 壁厚の既定値（m）。**片面しか撮れない壁では実測できない**ので作図上の
 #: 仮定。両面が撮れていれば測れる（実測で 29〜160mm）が、まずは人が直せる
 #: 値として置く。
 WALL_THICKNESS = 0.12
 #: 人が編集した平面図。room.json は書き換えず、全体をここに持つ。
 EDIT_FILE = "plan_edit.json"
-#: 現場で付けたコメント。**置換と違って残す。** 人が書いた内容であって、
-#: 試しに置いてみた表示ではない。
-COMMENT_FILE = "comments.json"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -97,7 +91,6 @@ def summary(bundle: Path) -> dict:
     s["hasClass"] = (bundle / "mesh_class.bin").exists()
     s["hasMoves"] = (bundle / "moves.json").exists()
     s["edited"] = (bundle / EDIT_FILE).exists()
-    s["comments"] = len((_read_json(bundle / COMMENT_FILE) or {}).get("comments", []))
     s["hasArranged"] = (bundle / "arranged.ply").exists()
     return s
 
@@ -267,27 +260,6 @@ def geom_payload(bundle: Path) -> dict:
         cache.parent.mkdir(exist_ok=True)
         cache.write_text(json.dumps(g))
     return g
-
-
-def save_comments(bundle: Path, doc: dict) -> dict:
-    """コメントを書く。**スキャンには触れない。**
-
-    位置は 3D と平面図が共有する枠（主方向で回し、原点は図面の左上、床が
-    Y=0、単位メートル）で持つ。だから平面図にも同じ座標でそのまま出せる。
-    """
-    items = []
-    for c in (doc.get("comments") or [])[:MAX_COMMENTS]:
-        p = c.get("p") or []
-        if len(p) != 3:
-            continue
-        items.append(dict(
-            id=str(c.get("id") or "")[:64],
-            p=[round(float(v), 4) for v in p],
-            text=str(c.get("text") or "")[:MAX_COMMENT_LEN],
-            at=str(c.get("at") or "")[:32]))
-    (bundle / COMMENT_FILE).write_text(
-        json.dumps({"comments": items}, ensure_ascii=False, indent=1))
-    return {"ok": True, "count": len(items)}
 
 
 def save_plan(bundle: Path, doc: dict) -> dict:
@@ -514,9 +486,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._dxf(bundle)
                 if what == "atlas":
                     return self._atlas(bundle)
-                if what == "comments":
-                    return self._json(_read_json(bundle / COMMENT_FILE)
-                                      or {"comments": []})
                 if what == "file" and len(rest) > 2:
                     return self._file(bundle / rest[2])
             self._json({"error": "そんな道は無い"}, 404)
@@ -553,8 +522,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(save_plan(bundle, body))
                 if what == "plan-reset":
                     return self._json(reset_plan(bundle))
-                if what == "comments":
-                    return self._json(save_comments(bundle, body))
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
             self._json({"error": "そんな道は無い"}, 404)

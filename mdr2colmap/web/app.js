@@ -94,8 +94,7 @@ async function select(id) {
   if (plan.error) { setStatus(plan.error, true); return; }
   showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
-  const cm = await api(`/api/scans/${id}/comments`);
-  comments = (cm && cm.comments) || [];
+  comments = [];                   // その場限り。スキャンを選び直せば消える
   replaceMap = {};                 // その場限り。スキャンを選び直せば戻る
   for (const [, n] of replaceNodes) if (scene) scene.remove(n);
   replaceNodes = new Map();
@@ -504,7 +503,7 @@ const WALK_SPEED = 1.4;      // 歩く速さ（m/秒）
 const WALK_RADIUS = 0.3;     // 体の半径。壁へのめり込みを止める
 const WALK_LOW = 0.25;       // これより低い家具は跨げる
 /* コメント。歩きながら、見ている先に書き留める。
-   **置換と違って残す。** 人が書いた内容であって、試しの表示ではない。
+   **置換と同じく、その場限り。保存しない。** 読み込み直せば消える。
    位置は 3D と平面図が共有する枠で持つので、平面図にも同じ座標で出せる。 */
 let commenting = false;      // コメントモード
 let comments = [];           // [{id, p:[x,y,z], text, at}]
@@ -1097,21 +1096,17 @@ function listComments() {
     const x = document.createElement('span');
     x.className = 'x';
     x.textContent = '消す';
-    x.onclick = async () => {
+    x.onclick = () => {
       comments = comments.filter(v => v.id !== c.id);
-      await saveComments();
+      refreshComments();
     };
     li.append(n, t, x);
     ul.appendChild(li);
   });
 }
 
-async function saveComments() {
-  if (current) {
-    await api(`/api/scans/${current}/comments`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ comments }) });
-  }
+/** 付けたコメントを映し直す。**保存はしない。その場限り。** */
+function refreshComments() {
   drawComments();
   listComments();
   drawPlan();
@@ -1862,7 +1857,7 @@ document.getElementById('follow').onchange = e => {
   moveWalls(); clipParts(); draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
-document.getElementById('cmtbox').addEventListener('submit', async e => {
+document.getElementById('cmtbox').addEventListener('submit', e => {
   e.preventDefault();
   const t = document.getElementById('cmtText').value.trim();
   const p = cmtPending;
@@ -1870,7 +1865,7 @@ document.getElementById('cmtbox').addEventListener('submit', async e => {
   if (!t || !p) return;
   comments.push({ id: `c${Date.now().toString(36)}${comments.length}`,
                   p, text: t, at: new Date().toISOString() });
-  await saveComments();
+  refreshComments();
   setStatus(`コメントを付けました（${comments.length} 件）`);
 });
 document.getElementById('cmtCancel').onclick = () => closeComment();
