@@ -819,4 +819,42 @@ ok('戻すとまた塞ぐ', shell.children.length === 4 + plan.walls.length,
 
 THREE = undefined; renderer = null; scene = null; shell = null;
 
+
+// --- 家具の置換 -------------------------------------------------------------
+// ここは three.js も描画も要らない（前の節で scene は畳んである）。
+// 箱に収める倍率。3 軸とも同じ＝形が崩れない。
+var box = { w: 1.27, d: 0.58, h: 0.79 };
+ok('いちばん厳しい軸に合わせる',
+   near(fitInBox([55, 35.8267, 30], box), 0.58 / 30, 1e-9),
+   String(fitInBox([55, 35.8267, 30], box)));
+ok('収めた実寸は箱を超えない', (function () {
+  var k = fitInBox([55, 35.8267, 30], box);
+  return 55 * k <= box.w + 1e-9 && 35.8267 * k <= box.h + 1e-9
+      && 30 * k <= box.d + 1e-9;
+})());
+ok('縦長のアセットは高さで決まる',
+   near(fitInBox([0.1, 10, 0.1], box), 0.79 / 10, 1e-9));
+ok('0 で割らない', isFinite(fitInBox([0, 0, 0], box)));
+
+// 操作列。家具を選んでいるときだけ使える。
+assetList = [{ key: 'table', label: 'table', faces: 928, size: [55, 36, 30] },
+             { key: 'chair', label: 'chair', faces: 2500, size: [1, 1, 1] }];
+replaceMap = {};
+sel = null;
+syncReplaceUI();
+ok('選んでいなければ使えない',
+   els['replaceWith'].disabled === true && els['replaceDo'].disabled === true);
+sel = plan.objects[0].id;
+syncReplaceUI();
+ok('家具を選べば使える', els['replaceWith'].disabled === false);
+ok('一覧が入る（置換なし＋2 件）', els['replaceWith'].kids.length === 3,
+   'n=' + els['replaceWith'].kids.length);
+ok('ボタンは「置換」', els['replaceDo'].textContent === '置換');
+replaceMap[sel] = 'table';
+syncReplaceUI();
+ok('置換済みなら「戻す」', els['replaceDo'].textContent === '戻す');
+ok('選択中のアセットが出る', els['replaceWith'].value === 'table');
+sel = null; replaceMap = {}; assetList = [];
+syncReplaceUI();
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

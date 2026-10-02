@@ -214,3 +214,24 @@ _ROOM = {
     "sections": [], "floors": [],
     "version": 2, "story": 0,
 }
+
+
+def test_replacement_state_round_trips(tmp_path):
+    """置換は表示の指定だけ。**スキャンは書き換えない。**"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-x.mdr"
+    b.mkdir()
+    (b / "room.json").write_text("{}")
+    assert webapp._read_json(b / webapp.REPLACE_FILE) is None
+    (b / webapp.REPLACE_FILE).write_text('{"obj-1": "table"}')
+    assert webapp._read_json(b / webapp.REPLACE_FILE) == {"obj-1": "table"}
+    assert not (b / "mesh_vc.glb").exists()
+    assert sorted(p.name for p in b.iterdir()) == ["replace.json", "room.json"]
+
+
+def test_asset_list_ignores_other_files(tmp_path):
+    from mdr2colmap import webapp
+    (tmp_path / "notes.txt").write_text("x")
+    (tmp_path / "broken.glb").write_bytes(b"nope")
+    assert webapp.asset_list(tmp_path) == []
+    assert webapp.asset_list(tmp_path / "missing") == []

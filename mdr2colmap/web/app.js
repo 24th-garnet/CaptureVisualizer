@@ -94,6 +94,10 @@ async function select(id) {
   if (plan.error) { setStatus(plan.error, true); return; }
   showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
+  replaceMap = await api(`/api/scans/${id}/replace`);
+  if (!replaceMap || replaceMap.error) replaceMap = {};
+  for (const [, n] of replaceNodes) if (scene) scene.remove(n);
+  replaceNodes = new Map();
   const saved = await api(`/api/scans/${id}/moves`);
   for (const m of (saved.moved || [])) {
     if (!state.has(m.id)) continue;
@@ -500,6 +504,13 @@ let fillTex = new Map();     // それを three.js の質感にしたもの
 let shellHeight = 2.4;
 let geomExtent = [1, 1];
 let placeholder = null;      // 編集で生まれた空間に出す無機的な絵
+/* 家具の置換。RoomPlan の箱の中身を、別の 3D に差し替える。
+   **スキャンは書き換えない。** 差し替えは表示の指定で、replace.json に
+   「どの家具をどのアセットにしたか」だけを残す。元へはいつでも戻せる。 */
+let assetList = [];          // 使えるアセット
+let assetCache = new Map();  // key -> 読み込んだ部品（使い回す）
+let replaceMap = {};         // 家具 id -> アセット key
+let replaceNodes = new Map(); // 家具 id -> 置いた 3D
 const PLACEHOLDER = '\u0000placeholder';
 const PLACEHOLDER_TILE = 0.25;   // 絵の 1 升が何メートルか
 /* スキャンした壁を編集に追従させるための控え。
@@ -640,7 +651,8 @@ async function loadGeom(id) {
     if (part.kind === 'object') {
       mesh.position.set(part.c[0], 0, part.c[2]);
       mesh.userData.id = part.id;
-      meshes.set(part.id, { mesh, c: part.c });
+      meshes.set(part.id, { mesh, c: part.c,
+                            y0: part.box ? part.box.y0 : 0 });
       pickable.push(mesh);
       if (part.box) addBox(part);
     }
@@ -652,6 +664,7 @@ async function loadGeom(id) {
   document.getElementById('walk').disabled = false;
   updateOverlay();                            // initGL の後でないと作れない
   buildShell();
+  applyReplacements();
   moveWalls();
   clipParts();
   resizeGL(); place(); draw();
@@ -1228,6 +1241,82 @@ function buildShell() {
   scene.add(g);
 }
 
+/** アセットを読んで three.js の形にする。1 度読んだら使い回す。 */
+async function loadAsset(key) {
+  if (assetCache.has(key)) return assetCache.get(key);
+  const pr = (async () => {
+    const d = await api(`/api/assets/${encodeURIComponent(key)}`);
+    if (d.error) return null;
+    const g = new THREE.Group();
+    for (const p of d.parts) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position',
+                       new THREE.BufferAttribute(dec(p.pos, Float32Array), 3));
+      if (p.uv) geo.setAttribute('uv',
+                                 new THREE.BufferAttribute(dec(p.uv, Float32Array), 2));
+      geo.setIndex(new THREE.BufferAttribute(dec(p.idx, Uint32Array), 1));
+      geo.computeVertexNormals();
+      const c = p.color || [200, 200, 200];
+      const mat = new THREE.MeshLambertMaterial({
+        color: new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255),
+        side: THREE.DoubleSide });          // 外から見るものなので両面
+      if (p.tex !== undefined) {
+        mat.map = new THREE.TextureLoader().load(
+          `/api/assets/${encodeURIComponent(key)}/tex/${p.tex}`, () => draw());
+        mat.map.flipY = false;
+        mat.color.setHex(0xffffff);
+      }
+      g.add(new THREE.Mesh(geo, mat));
+    }
+    return { group: g, size: d.size };
+  })();
+  assetCache.set(key, pr);
+  return pr;
+}
+
+/** アセットを箱に収める倍率。**3 軸とも同じ倍率にする。**
+    軸ごとに合わせると縦横比の違うアセットが引き伸ばされる（実測で 24×39×26
+    や 55×35×30 の書き出しがあった）。いちばん厳しい軸に合わせる。 */
+function fitInBox(size, o) {
+  return Math.min(o.w / Math.max(size[0], 1e-6),
+                  o.h / Math.max(size[1], 1e-6),
+                  o.d / Math.max(size[2], 1e-6));
+}
+
+/** 置換を 3D へ反映する。
+
+    箱に収め、底に置いて中心を揃える。倍率は `fitInBox`。 */
+async function applyReplacements() {
+  if (!renderer || !plan) return;
+  for (const [id, node] of replaceNodes) {
+    if (replaceMap[id]) continue;
+    scene.remove(node);
+    replaceNodes.delete(id);
+    const m = meshes.get(id);
+    if (m) m.mesh.visible = true;              // 元のスキャンを戻す
+  }
+  for (const o of (plan.objects || [])) {
+    const key = replaceMap[o.id];
+    const m = meshes.get(o.id);
+    if (!key) continue;
+    if (m) m.mesh.visible = false;
+    if (replaceNodes.has(o.id)) continue;
+    const a = await loadAsset(key);
+    if (!a) { delete replaceMap[o.id]; continue; }
+    const k = fitInBox(a.size, o);
+    const inner = a.group.clone(true);
+    inner.scale.set(k, k, k);
+    // アセットは中心が原点。箱の底へ下ろす。
+    inner.position.set(0, a.size[1] * k / 2, 0);
+    const node = new THREE.Group();
+    node.add(inner);
+    node.userData.id = o.id;
+    scene.add(node);
+    replaceNodes.set(o.id, node);
+  }
+  place();
+}
+
 function addBox(part) {
   const b = part.box, pts = b.pts, y0 = b.y0, y1 = b.y0 + b.h, v = [];
   for (let i = 0; i < 4; i++) {
@@ -1280,6 +1369,7 @@ function placeSvg() {
     g.classList.toggle('moved', !!(m.dx || m.dz || m.dyaw));
     g.classList.toggle('sel', sel === o.id);
   }
+  syncReplaceUI();
 }
 
 function place() {
@@ -1291,6 +1381,12 @@ function place() {
     if (m3) {
       m3.mesh.position.set(m3.c[0] + m.dx, 0, m3.c[2] + m.dz);
       m3.mesh.rotation.y = m.dyaw * Math.PI / 180;
+    }
+    const rp = replaceNodes.get(o.id);
+    if (rp && m3) {
+      // 置換も家具と同じだけ動かす。向きは箱の向き＋人の回転。
+      rp.position.set(m3.c[0] + m.dx, m3.y0 || 0, m3.c[2] + m.dz);
+      rp.rotation.y = (o.yaw + m.dyaw) * Math.PI / 180;
     }
     const bx = boxes.get(o.id);
     if (bx && m3) {
@@ -1484,6 +1580,22 @@ const bump = d => { if (sel) { state.get(sel).dyaw += d; dirty = true; place(); 
 document.getElementById('rotL').onclick = () => bump(15);
 document.getElementById('rotR').onclick = () => bump(-15);
 document.getElementById('rot90').onclick = () => bump(90);
+document.getElementById('replaceDo').onclick = async () => {
+  if (!sel) return;
+  const box = document.getElementById('replaceWith');
+  if (replaceMap[sel]) delete replaceMap[sel];
+  else if (box.value) replaceMap[sel] = box.value;
+  else { setStatus('置き換えるアセットを選んでください', true); return; }
+  await saveReplace();
+  await applyReplacements();
+  syncReplaceUI();
+  setStatus(replaceMap[sel] ? '置き換えました' : '元のスキャンに戻しました');
+};
+document.getElementById('replaceWith').onchange = () => {
+  const box = document.getElementById('replaceWith');
+  document.getElementById('replaceDo').textContent =
+    (box.value && box.value !== replaceMap[sel]) ? '置換' : (replaceMap[sel] ? '戻す' : '置換');
+};
 document.getElementById('resetOne').onclick = () => {
   if (sel) { state.set(sel, { dx: 0, dz: 0, dyaw: 0 }); dirty = true; place(); }
 };
@@ -1523,6 +1635,10 @@ document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Ma
 document.getElementById('walk').onclick = () => (walking ? exitWalk() : enterWalk());
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };
 document.getElementById('reload').onclick = loadList;
+api('/api/assets').then(a => {
+  assetList = Array.isArray(a) ? a : [];
+  syncReplaceUI();
+});
 
 document.getElementById('editmode').onchange = e => {
   editing = e.target.checked;
@@ -1601,6 +1717,39 @@ document.getElementById('save').onclick = async () => {
   }
   table();
 };
+
+/** 置換の操作列。家具を選んでいるときだけ使える。 */
+function syncReplaceUI() {
+  const box = document.getElementById('replaceWith');
+  const btn = document.getElementById('replaceDo');
+  if (!box || !btn) return;
+  const obj = (plan && plan.objects || []).find(v => v.id === sel);
+  box.disabled = !obj;
+  btn.disabled = !obj;
+  if (box.dataset.filled !== String(assetList.length)) {
+    box.innerHTML = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '置換なし';
+    box.appendChild(none);
+    for (const a of assetList) {
+      const op = document.createElement('option');
+      op.value = a.key;
+      op.textContent = `${a.label}（${a.faces.toLocaleString()} 面）`;
+      box.appendChild(op);
+    }
+    box.dataset.filled = String(assetList.length);
+  }
+  box.value = (obj && replaceMap[sel]) || '';
+  btn.textContent = box.value ? '戻す' : '置換';
+}
+
+async function saveReplace() {
+  if (!current) return;
+  await api(`/api/scans/${current}/replace`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(replaceMap) });
+}
 
 function setStatus(text, err) {
   const s = document.getElementById('status');

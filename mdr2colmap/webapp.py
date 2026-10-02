@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from . import dxf, meshplan, roomplan, segment, webgeom
+from . import assets, dxf, meshplan, roomplan, segment, webgeom
 from .mesh import Mesh, read_ply_mesh
 
 WEB_ROOT = Path(__file__).parent / "web"
@@ -48,6 +48,8 @@ COOKIE = "madoriba_token"
 WALL_THICKNESS = 0.12
 #: 人が編集した平面図。room.json は書き換えず、全体をここに持つ。
 EDIT_FILE = "plan_edit.json"
+#: 家具をどのアセットへ置き換えたか。**スキャンは書き換えない。**
+REPLACE_FILE = "replace.json"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -214,6 +216,38 @@ def _plan_from_mesh(mesh: Mesh) -> dict:
 # --- 3D（重いのでキャッシュする）-------------------------------------------
 
 
+def asset_list(root: Path) -> list[dict]:
+    """置換に使えるアセットを並べる。`.glb` だけ。"""
+    if not root.is_dir():
+        return []
+    out = []
+    for f in sorted(root.glob("*.glb")):
+        try:
+            d = asset_payload(root, f.stem)
+        except Exception:                        # noqa: BLE001
+            continue
+        out.append(dict(key=f.stem, label=f.stem, faces=d["faces"],
+                        size=d["size"]))
+    return out
+
+
+def asset_payload(root: Path, key: str) -> dict:
+    """アセットを解いて渡す形にする。重いのでキャッシュする。"""
+    src = root / f"{key}.glb"
+    if not src.exists():
+        raise FileNotFoundError(key)
+    cache = root / ".web" / f"{key}.json"
+    if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
+        return json.loads(cache.read_text())
+    with _build_lock:
+        doc, texs = assets.payload(src)
+        cache.parent.mkdir(exist_ok=True)
+        for i, b in enumerate(texs):
+            (cache.parent / f"{key}.{i}.bin").write_bytes(b)
+        cache.write_text(json.dumps(doc))
+    return doc
+
+
 def geom_payload(bundle: Path) -> dict:
     cache = bundle / ".web" / "geom.json"
     src = bundle / "mesh_vc.glb"
@@ -341,6 +375,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _blob(self, body: bytes, mime: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _atlas(self, bundle: Path) -> None:
         """テクスチャのアトラスを渡す。
 
@@ -411,6 +453,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(WEB_ROOT / p[len("/static/"):])
             if p == "/api/scans":
                 return self._json(scan_list(self.root))
+            if p == "/api/assets":
+                return self._json(asset_list(self.assets))
+            if p.startswith("/api/assets/"):
+                rest = p[len("/api/assets/"):].split("/")
+                try:
+                    doc = asset_payload(self.assets, rest[0])
+                except Exception:                 # noqa: BLE001
+                    return self._json({"error": "アセットが無い"}, 404)
+                if len(rest) == 3 and rest[1] == "tex":
+                    f = self.assets / ".web" / f"{rest[0]}.{int(rest[2])}.bin"
+                    if not f.exists():
+                        return self._json({"error": "画像が無い"}, 404)
+                    mime = doc["textures"][int(rest[2])]
+                    return self._blob(f.read_bytes(), mime)
+                return self._json(doc)
             if p.startswith("/api/scans/"):
                 rest = p[len("/api/scans/"):].split("/")
                 bundle = self._bundle(rest[0])
@@ -431,6 +488,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._dxf(bundle)
                 if what == "atlas":
                     return self._atlas(bundle)
+                if what == "replace":
+                    return self._json(_read_json(bundle / REPLACE_FILE) or {})
                 if what == "file" and len(rest) > 2:
                     return self._file(bundle / rest[2])
             self._json({"error": "そんな道は無い"}, 404)
@@ -467,6 +526,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(save_plan(bundle, body))
                 if what == "plan-reset":
                     return self._json(reset_plan(bundle))
+                if what == "replace":
+                    # **スキャンは書き換えない。** 置換は表示の指定だけ。
+                    (bundle / REPLACE_FILE).write_text(
+                        json.dumps(body, ensure_ascii=False, indent=1))
+                    return self._json({"ok": True})
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
             self._json({"error": "そんな道は無い"}, 404)
@@ -476,7 +540,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(root: str | Path, port: int = 8765, host: str = "127.0.0.1",
-          token: str | None = None, read_only: bool = False) -> None:
+          token: str | None = None, read_only: bool = False,
+          asset_dir: str | Path | None = None) -> None:
     """起動する。
 
     **localhost 以外へ出すときは合言葉を必ず付ける。** このアプリは
@@ -486,6 +551,10 @@ def serve(root: str | Path, port: int = 8765, host: str = "127.0.0.1",
     """
     Handler.root = Path(root).expanduser().resolve()
     Handler.read_only = read_only
+    # 置換アセットは**リポジトリに入れない**。出所と使用条件が物ごとに違うので、
+    # スキャンと同じく手元のディレクトリに置く。
+    Handler.assets = (Path(asset_dir).expanduser().resolve() if asset_dir
+                      else Handler.root.parent / "assets")
 
     local = host in ("127.0.0.1", "localhost", "::1")
     tok = token or os.environ.get("MADORIBA_TOKEN") or ""

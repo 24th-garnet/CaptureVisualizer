@@ -316,7 +316,8 @@ def cmd_web(args) -> int:
     from . import webapp
 
     webapp.serve(args.root, port=args.port, host=args.host,
-                 token=args.token, read_only=args.read_only)
+                 token=args.token, read_only=args.read_only,
+                 asset_dir=args.assets)
     return 0
 
 
@@ -371,6 +372,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="0.0.0.0 にすると同じ LAN から見える。合言葉が要る")
     wb.add_argument("--token", default=None,
                     help="合言葉。省略時は MADORIBA_TOKEN、外向きなら自動生成")
+    wb.add_argument("--assets", default=None,
+                    help="置換に使う .glb を置いたディレクトリ。"
+                         "既定はバンドルの親の assets/")
     wb.add_argument("--read-only", action="store_true",
                     help="書き込みを受け付けない（閲覧だけ配るとき）")
     wb.set_defaults(func=cmd_web)
