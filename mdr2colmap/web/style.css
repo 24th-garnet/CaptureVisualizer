@@ -47,7 +47,6 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
        border: 1px solid currentColor; border-radius: 2px; color: var(--faint); }
 .tag.room { color: var(--pick); }
 .tag.moved { color: var(--moved); }
-.tag.swap { color: var(--shu); }
 /* 置換した家具。**人の操作でしか起きない**ので、起きていることを示す。 */
 .obj.swap rect { stroke: var(--shu); stroke-dasharray: .06 .04; }
 .obj.swap text { fill: var(--shu); }

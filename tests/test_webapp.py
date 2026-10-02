@@ -216,17 +216,18 @@ _ROOM = {
 }
 
 
-def test_replacement_state_round_trips(tmp_path):
-    """置換は表示の指定だけ。**スキャンは書き換えない。**"""
+def test_replacement_is_not_persisted(tmp_path):
+    """置換はその場限り。**スキャンにも、別ファイルにも残さない。**
+
+    残すと、次に開いた人が測ったものと置き換えたものを見分けられない。
+    """
     from mdr2colmap import webapp
     b = tmp_path / "room-x.mdr"
     b.mkdir()
-    (b / "room.json").write_text("{}")
-    assert webapp._read_json(b / webapp.REPLACE_FILE) is None
-    (b / webapp.REPLACE_FILE).write_text('{"obj-1": "table"}')
-    assert webapp._read_json(b / webapp.REPLACE_FILE) == {"obj-1": "table"}
-    assert not (b / "mesh_vc.glb").exists()
-    assert sorted(p.name for p in b.iterdir()) == ["replace.json", "room.json"]
+    (b / "manifest.json").write_text("{}")
+    assert not hasattr(webapp, "REPLACE_FILE")
+    assert "replaced" not in webapp.summary(b)
+    assert sorted(p.name for p in b.iterdir()) == ["manifest.json"]
 
 
 def test_asset_list_ignores_other_files(tmp_path):
@@ -235,14 +236,3 @@ def test_asset_list_ignores_other_files(tmp_path):
     (tmp_path / "broken.glb").write_bytes(b"nope")
     assert webapp.asset_list(tmp_path) == []
     assert webapp.asset_list(tmp_path / "missing") == []
-
-
-def test_summary_reports_replacement_count(tmp_path):
-    """置換は人の操作でしか起きない。起きていることが一覧で見える。"""
-    from mdr2colmap import webapp
-    b = tmp_path / "room-y.mdr"
-    b.mkdir()
-    (b / "manifest.json").write_text("{}")
-    assert webapp.summary(b)["replaced"] == 0
-    (b / webapp.REPLACE_FILE).write_text('{"a": "t", "b": "t"}')
-    assert webapp.summary(b)["replaced"] == 2

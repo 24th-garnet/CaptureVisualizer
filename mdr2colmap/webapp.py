@@ -48,8 +48,6 @@ COOKIE = "madoriba_token"
 WALL_THICKNESS = 0.12
 #: 人が編集した平面図。room.json は書き換えず、全体をここに持つ。
 EDIT_FILE = "plan_edit.json"
-#: 家具をどのアセットへ置き換えたか。**スキャンは書き換えない。**
-REPLACE_FILE = "replace.json"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -93,8 +91,6 @@ def summary(bundle: Path) -> dict:
     s["hasClass"] = (bundle / "mesh_class.bin").exists()
     s["hasMoves"] = (bundle / "moves.json").exists()
     s["edited"] = (bundle / EDIT_FILE).exists()
-    # 置換は人の操作でしか起きないので、起きていることが一覧で見えるようにする。
-    s["replaced"] = len(_read_json(bundle / REPLACE_FILE) or {})
     s["hasArranged"] = (bundle / "arranged.ply").exists()
     return s
 
@@ -490,8 +486,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._dxf(bundle)
                 if what == "atlas":
                     return self._atlas(bundle)
-                if what == "replace":
-                    return self._json(_read_json(bundle / REPLACE_FILE) or {})
                 if what == "file" and len(rest) > 2:
                     return self._file(bundle / rest[2])
             self._json({"error": "そんな道は無い"}, 404)
@@ -528,17 +522,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(save_plan(bundle, body))
                 if what == "plan-reset":
                     return self._json(reset_plan(bundle))
-                if what == "replace":
-                    # **スキャンは書き換えない。** 置換は表示の指定だけ。
-                    #
-                    # 書いたことを必ず残す。置換は人の操作でしか起きないはず
-                    # なのに「最初から置き換わっている」と見えたことがあり、
-                    # 誰が書いたか分からないと切り分けられない。
-                    (bundle / REPLACE_FILE).write_text(
-                        json.dumps(body, ensure_ascii=False, indent=1))
-                    print(f"[replace] {bundle.name} ← {len(body)} 件 "
-                          f"{sorted(body)[:3]}", flush=True)
-                    return self._json({"ok": True})
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
             self._json({"error": "そんな道は無い"}, 404)

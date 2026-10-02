@@ -56,7 +56,6 @@ async function loadList() {
     const tags = [];
     if (s.hasRoom) tags.push('<span class="tag room">RoomPlan</span>');
     if (s.hasMoves) tags.push('<span class="tag moved">配置あり</span>');
-    if (s.replaced) tags.push(`<span class="tag swap">置換 ${s.replaced}</span>`);
     if (s.unfilled > 0.15) tags.push(`<span class="tag warn">未撮影 ${Math.round(s.unfilled * 100)}%</span>`);
     if (!s.hasVertexColor) tags.push('<span class="tag warn">3D なし</span>');
     d.innerHTML = `<div class="name">${s.name}</div>`
@@ -95,8 +94,7 @@ async function select(id) {
   if (plan.error) { setStatus(plan.error, true); return; }
   showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
-  replaceMap = await api(`/api/scans/${id}/replace`);
-  if (!replaceMap || replaceMap.error) replaceMap = {};
+  replaceMap = {};                 // その場限り。スキャンを選び直せば戻る
   for (const [, n] of replaceNodes) if (scene) scene.remove(n);
   replaceNodes = new Map();
   const saved = await api(`/api/scans/${id}/moves`);
@@ -508,8 +506,9 @@ let shellHeight = 2.4;
 let geomExtent = [1, 1];
 let placeholder = null;      // 編集で生まれた空間に出す無機的な絵
 /* 家具の置換。RoomPlan の箱の中身を、別の 3D に差し替える。
-   **スキャンは書き換えない。** 差し替えは表示の指定で、replace.json に
-   「どの家具をどのアセットにしたか」だけを残す。元へはいつでも戻せる。 */
+   **その場限り。保存しない。** 読み込み直せばスキャンに戻る。差し替えは
+   「置いてみたらどう見えるか」を確かめるためのもので、残すと次に開いた人が
+   測ったものと見分けられない。 */
 let assetList = [];          // 使えるアセット
 let assetCache = new Map();  // key -> 読み込んだ部品（使い回す）
 let replaceMap = {};         // 家具 id -> アセット key
@@ -1606,11 +1605,9 @@ document.getElementById('replaceDo').onclick = async () => {
   if (replaceMap[sel]) delete replaceMap[sel];
   else if (box.value) replaceMap[sel] = box.value;
   else { setStatus('置き換えるアセットを選んでください', true); return; }
-  await saveReplace();
   await applyReplacements();
   drawPlan();
   syncReplaceUI();
-  loadList();
   setStatus(replaceMap[sel] ? '置き換えました' : '元のスキャンに戻しました');
 };
 document.getElementById('replaceWith').onchange = () => {
@@ -1764,13 +1761,6 @@ function syncReplaceUI() {
   }
   box.value = (obj && replaceMap[sel]) || '';
   btn.textContent = box.value ? '戻す' : '置換';
-}
-
-async function saveReplace() {
-  if (!current) return;
-  await api(`/api/scans/${current}/replace`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(replaceMap) });
 }
 
 function setStatus(text, err) {
