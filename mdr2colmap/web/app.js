@@ -513,6 +513,12 @@ let cmtPops = [];            // 近づいたとき出す吹き出し（DOM）
 //: 吹き出しを出す距離（m）。これより離れたら点だけに戻す。
 const CMT_POP_DIST = 2.5;
 let _cmtV = null;            // 投影の作業用。毎フレーム作らない
+/* コメントの出し方。`V` で一巡する。
+   **「近くだけ」が既定。** 全部出すと近い物が読めなくなるので、必要なときだけ
+   一括で開く。「消す」は点も含めて伏せる。 */
+const CMT_MODES = ['near', 'all', 'off'];
+const CMT_MODE_LABEL = { near: '近くだけ', all: 'すべて', off: '消す' };
+let cmtShow = 'near';
 /* 光線はコメントのときだけ使う（歩く当たり判定は平面図に移した）。
    **module 直下で作らない。** three.js が読めないときに app.js 全体が死ぬ。 */
 let _walkRay = null;
@@ -1069,7 +1075,7 @@ function drawComments() {
     cmtRoot.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     cmtRoot = null;
   }
-  if (!renderer || !scene || !comments.length) return;
+  if (!renderer || !scene || !comments.length || cmtShow === 'off') return;
   const g = new THREE.Group();
   const geo = new THREE.SphereGeometry(0.06, 12, 10);
   const mat = new THREE.MeshBasicMaterial({
@@ -1115,16 +1121,30 @@ function refreshComments() {
   draw();
 }
 
+/** コメントの出し方を一巡させる。 */
+function cycleCmtShow() {
+  cmtShow = CMT_MODES[(CMT_MODES.indexOf(cmtShow) + 1) % CMT_MODES.length];
+  if (cmtShow === 'off') hideCmtPops();
+  drawComments();
+  walkTip();
+  draw();
+}
+
+/** 歩くときの案内。いまの状態をそのまま出す。 */
+function walkTip() {
+  const tip = document.getElementById('walktip');
+  if (!tip) return;
+  const c = `コメント: ${CMT_MODE_LABEL[cmtShow]}（V で切替）`;
+  tip.textContent = commenting
+    ? `見ている先をクリックして書き留める　C で歩くモードへ戻る　${c}`
+    : `W A S D / 矢印で移動　マウスで見回す　C でコメント　${c}　Esc で戻る`;
+}
+
 function setCommenting(on) {
   commenting = on && walking;
   const hud = document.getElementById('walkhud');
   if (hud) hud.classList.toggle('commenting', commenting);
-  const tip = document.getElementById('walktip');
-  if (tip) {
-    tip.textContent = commenting
-      ? '見ている先をクリックして書き留める　C で歩くモードへ戻る'
-      : 'W A S D / 矢印で移動　マウスで見回す　C でコメント　Esc で戻る';
-  }
+  walkTip();
 }
 
 /** 文を入れてもらう。**ポインタの固定はいったん外す。**
@@ -1166,9 +1186,10 @@ function updateCmtPops() {
   while (cmtPops.length > comments.length) box.removeChild(cmtPops.pop());
   comments.forEach((c, i) => {
     const el2 = cmtPops[i];
+    if (cmtShow === 'off') { el2.hidden = true; return; }
     const dist = Math.hypot(c.p[0] - walkPos.x, c.p[1] - (walkPos.y + WALK_EYE),
                             c.p[2] - walkPos.z);
-    if (dist > CMT_POP_DIST) { el2.hidden = true; return; }
+    if (cmtShow === 'near' && dist > CMT_POP_DIST) { el2.hidden = true; return; }
     _cmtV.set(c.p[0], c.p[1], c.p[2]).project(walkCam);
     const v = _cmtV;
     // **後ろにあるものは出さない。** 投影は背後でも値を返す。
@@ -1199,6 +1220,7 @@ function enterWalk() {
   document.getElementById('stage3d').classList.add('walking');
   document.getElementById('walkhud').hidden = false;
   document.getElementById('walk').textContent = '戻る';
+  walkTip();
   resizeGL();
   drawPlan();                               // 立ち位置の印を出す
   lockPointer();                            // すぐ乗っ取る
@@ -1251,6 +1273,7 @@ window.addEventListener('keydown', e => {
   const k = WALK_KEYMAP[e.code];
   if (k) { walkKeys.add(k); e.preventDefault(); }
   else if (e.code === 'KeyC') { setCommenting(!commenting); e.preventDefault(); }
+  else if (e.code === 'KeyV') { cycleCmtShow(); e.preventDefault(); }
   else if (e.key === 'Escape') exitWalk();
 });
 window.addEventListener('keyup', e => {
