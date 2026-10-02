@@ -824,17 +824,22 @@ THREE = undefined; renderer = null; scene = null; shell = null;
 // ここは three.js も描画も要らない（前の節で scene は畳んである）。
 // 箱に収める倍率。3 軸とも同じ＝形が崩れない。
 var box = { w: 1.27, d: 0.58, h: 0.79 };
-ok('いちばん厳しい軸に合わせる',
-   near(fitInBox([55, 35.8267, 30], box), 0.58 / 30, 1e-9),
-   String(fitInBox([55, 35.8267, 30], box)));
-ok('収めた実寸は箱を超えない', (function () {
+ok('軸ごとに倍率を取る', (function () {
   var k = fitInBox([55, 35.8267, 30], box);
-  return 55 * k <= box.w + 1e-9 && 35.8267 * k <= box.h + 1e-9
-      && 30 * k <= box.d + 1e-9;
+  return near(k[0], 1.27 / 55, 1e-9) && near(k[1], 0.79 / 35.8267, 1e-9)
+      && near(k[2], 0.58 / 30, 1e-9);
+})(), JSON.stringify(fitInBox([55, 35.8267, 30], box)));
+ok('合わせた実寸は箱と同じ', (function () {
+  var sz = [55, 35.8267, 30], k = fitInBox(sz, box);
+  return near(sz[0] * k[0], box.w, 1e-9) && near(sz[1] * k[1], box.h, 1e-9)
+      && near(sz[2] * k[2], box.d, 1e-9);
 })());
-ok('縦長のアセットは高さで決まる',
-   near(fitInBox([0.1, 10, 0.1], box), 0.79 / 10, 1e-9));
-ok('0 で割らない', isFinite(fitInBox([0, 0, 0], box)));
+ok('縦横比の違うアセットでも箱と同じ', (function () {
+  var sz = [0.1, 10, 0.1], k = fitInBox(sz, box);
+  return near(sz[0] * k[0], box.w, 1e-9) && near(sz[1] * k[1], box.h, 1e-9)
+      && near(sz[2] * k[2], box.d, 1e-9);
+})());
+ok('0 で割らない', fitInBox([0, 0, 0], box).every(isFinite));
 
 // 操作列。家具を選んでいるときだけ使える。
 assetList = [{ key: 'table', label: 'table', faces: 928, size: [55, 36, 30] },

@@ -1277,18 +1277,23 @@ async function loadAsset(key) {
   return pr;
 }
 
-/** アセットを箱に収める倍率。**3 軸とも同じ倍率にする。**
-    軸ごとに合わせると縦横比の違うアセットが引き伸ばされる（実測で 24×39×26
-    や 55×35×30 の書き出しがあった）。いちばん厳しい軸に合わせる。 */
+/** アセットを箱に合わせる倍率。**軸ごとに取り、箱と同じ大きさにする。**
+
+    一様に縮めると箱より小さくなり（実測で 1.27×0.58×0.79 の箱に 1.07×0.69
+    ×0.58 しか入らなかった）、置き換えた家具がもとの家具より小さく見える。
+    縦横比の違うアセットは伸びるが、**寸法が合っていることのほうが要る**。
+
+    アセットの局所 x が家具の幅にあたるとは限らない。向きが合わない書き出しは
+    伸び方が変わるので、その場合はアセット側を直す。 */
 function fitInBox(size, o) {
-  return Math.min(o.w / Math.max(size[0], 1e-6),
-                  o.h / Math.max(size[1], 1e-6),
-                  o.d / Math.max(size[2], 1e-6));
+  return [o.w / Math.max(size[0], 1e-6),
+          o.h / Math.max(size[1], 1e-6),
+          o.d / Math.max(size[2], 1e-6)];
 }
 
 /** 置換を 3D へ反映する。
 
-    箱に収め、底に置いて中心を揃える。倍率は `fitInBox`。 */
+    箱と同じ大きさにし、底に置いて中心を揃える。倍率は `fitInBox`。 */
 async function applyReplacements() {
   if (!renderer || !plan) return;
   for (const [id, node] of replaceNodes) {
@@ -1308,9 +1313,9 @@ async function applyReplacements() {
     if (!a) { delete replaceMap[o.id]; continue; }
     const k = fitInBox(a.size, o);
     const inner = a.group.clone(true);
-    inner.scale.set(k, k, k);
-    // アセットは中心が原点。箱の底へ下ろす。
-    inner.position.set(0, a.size[1] * k / 2, 0);
+    inner.scale.set(k[0], k[1], k[2]);
+    // 合わせたあとの高さはちょうど箱の高さ。中心が原点なので半分だけ上げる。
+    inner.position.set(0, o.h / 2, 0);
     const node = new THREE.Group();
     node.add(inner);
     node.userData.id = o.id;
