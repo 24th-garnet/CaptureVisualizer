@@ -266,3 +266,15 @@ def test_hidden_attribute_is_not_overridden_by_display():
     assert "[hidden]" in css and "display: none !important" in css
     # hidden を付けている要素が display を指定しているなら、上の規則が要る
     assert html.count("hidden>") + html.count('hidden ') >= 4
+
+
+def test_walk_mode_does_not_hide_the_cursor():
+    """歩くモードで `cursor: none` を指定しない。
+
+    ポインタを固定している間はブラウザが隠すので要らず、コメントを書くために
+    固定を外したときにカーソルを見失わせるだけになる。
+    """
+    from mdr2colmap import webapp
+    css = (webapp.WEB_ROOT / "style.css").read_text()
+    block = css[css.index(".stage.walking"):][:160]
+    assert "cursor: none" not in block, block

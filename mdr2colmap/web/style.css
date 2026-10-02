@@ -79,7 +79,10 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .stage.view { background: var(--stage3d); }
 .stage svg, .stage canvas { display: block; width: 100%; height: 100%; }
 /* 歩くとき。狭い枠では向きを見失うので、画面を広げて十字を出す。 */
-.stage.walking { height: 72vh; cursor: none; }
+/* **カーソルを隠さない。** ポインタを固定している間はブラウザが隠すので
+   この指定は要らず、コメントを書くために固定を外したときにカーソルを
+   見失わせるだけになる。 */
+.stage.walking { height: 72vh; }
 .walkhud { position: absolute; inset: 0; pointer-events: none; }
 .walkhud .cross { position: absolute; left: 50%; top: 50%; width: 14px; height: 14px;
                   margin: -7px 0 0 -7px; border: 1px solid var(--paper);
