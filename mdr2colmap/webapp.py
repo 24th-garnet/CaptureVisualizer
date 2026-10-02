@@ -530,8 +530,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(reset_plan(bundle))
                 if what == "replace":
                     # **スキャンは書き換えない。** 置換は表示の指定だけ。
+                    #
+                    # 書いたことを必ず残す。置換は人の操作でしか起きないはず
+                    # なのに「最初から置き換わっている」と見えたことがあり、
+                    # 誰が書いたか分からないと切り分けられない。
                     (bundle / REPLACE_FILE).write_text(
                         json.dumps(body, ensure_ascii=False, indent=1))
+                    print(f"[replace] {bundle.name} ← {len(body)} 件 "
+                          f"{sorted(body)[:3]}", flush=True)
                     return self._json({"ok": True})
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
