@@ -1044,6 +1044,42 @@ cmtVisible = true;
 updateCmtPops();
 ok('戻せば近いものだけ出る',
    cmtPops[0].hidden === false && cmtPops[1].hidden === true);
+
+// --- 見ている先のコメントを消す ---------------------------------------------
+// 投影は画面の中央に返しているので、出ているものが「指している」相手になる。
+ok('十字が指しているものが決まる', cmtAim === 0, 'aim=' + cmtAim);
+ok('指しているものに印が付く', cmtPops[0].classList.contains('aim') === true);
+ok('案内に消し方が出る', els['walktip'].textContent.indexOf('Delete で消す') >= 0,
+   els['walktip'].textContent);
+var cbefore = comments.length;
+ok('消える', deleteAimedComment() === true && comments.length === cbefore - 1,
+   'n=' + comments.length);
+ok('消したのは指していたほう', comments.every(function (c) { return c.text !== '近い'; }));
+ok('指し先は外れる', cmtAim === -1);
+ok('指していなければ何もしない', deleteAimedComment() === false);
+
+// 十字から離れたところにあれば指さない
+comments = [{ id: 'z', p: [0, WALK_EYE, 1.0], text: 'z', at: '' }];
+cmtPops = [];
+THREE.Vector3 = function () {
+  this.set = function (x, y, z) { this.x = x; this.y = y; this.z = z; return this; };
+  this.project = function () { this.x = 0.5; this.y = 0.5; this.z = 0.5; return this; };
+};
+_cmtV = null;
+updateCmtPops();
+ok('十字から離れていれば指さない', cmtAim === -1, 'aim=' + cmtAim);
+ok('それでも吹き出しは出る', cmtPops[0].hidden === false);
+
+// **続きの検査のために、場と投影を元へ戻す。**
+THREE.Vector3 = function () {
+  this.set = function (x, y, z) { this.x = x; this.y = y; this.z = z; return this; };
+  this.project = function () { this.x = 0; this.y = 0; this.z = 0.5; return this; };
+};
+_cmtV = null;
+comments = [{ id: 'a', p: [0, WALK_EYE, 1.0], text: '近い', at: '' },
+            { id: 'b', p: [0, WALK_EYE, 9.0], text: '遠い', at: '' }];
+cmtPops = [];
+updateCmtPops();
 ok('距離の境目は CMT_POP_DIST', CMT_POP_DIST > 1.0 && CMT_POP_DIST < 9.0);
 ok('画面の位置が入る', cmtPops[0].style.left === '400px', cmtPops[0].style.left);
 

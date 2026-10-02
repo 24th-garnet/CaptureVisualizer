@@ -517,6 +517,9 @@ let _cmtV = null;            // 投影の作業用。毎フレーム作らない
    **出すときも近いものだけ。** 距離を問わず全部開くと、手前のものが後ろの
    ものに隠れて読めなくなる。「消す」は吹き出しも 3D の点も伏せる。 */
 let cmtVisible = true;
+let cmtAim = -1;             // 十字が指しているコメント。-1 は無し
+//: 十字がコメントを指していると見なす範囲（画面の正規化座標）。
+const CMT_AIM_R = 0.12;
 /* 光線はコメントのときだけ使う（歩く当たり判定は平面図に移した）。
    **module 直下で作らない。** three.js が読めないときに app.js 全体が死ぬ。 */
 let _walkRay = null;
@@ -1101,7 +1104,7 @@ function listComments() {
     t.textContent = c.text;
     const x = document.createElement('span');
     x.className = 'x';
-    x.textContent = '消す';
+    x.textContent = '削除';
     x.onclick = () => {
       comments = comments.filter(v => v.id !== c.id);
       refreshComments();
@@ -1133,9 +1136,10 @@ function walkTip() {
   const tip = document.getElementById('walktip');
   if (!tip) return;
   const c = `コメント: ${cmtVisible ? '表示' : '消す'}（V で切替）`;
-  tip.textContent = commenting
+  const del = cmtAim >= 0 ? '　Delete で消す' : '';
+  tip.textContent = (commenting
     ? `見ている先をクリックして書き留める　C で歩くモードへ戻る　${c}`
-    : `W A S D / 矢印で移動　マウスで見回す　C でコメント　${c}　Esc で戻る`;
+    : `W A S D / 矢印で移動　マウスで見回す　C でコメント　${c}　Esc で戻る`) + del;
 }
 
 function setCommenting(on) {
@@ -1182,8 +1186,10 @@ function updateCmtPops() {
     cmtPops.push(d);
   }
   while (cmtPops.length > comments.length) box.removeChild(cmtPops.pop());
+  let aim = -1, aimD = CMT_AIM_R;
   comments.forEach((c, i) => {
     const el2 = cmtPops[i];
+    el2.classList.remove('aim');
     if (!cmtVisible) { el2.hidden = true; return; }
     const dist = Math.hypot(c.p[0] - walkPos.x, c.p[1] - (walkPos.y + WALK_EYE),
                             c.p[2] - walkPos.z);
@@ -1199,11 +1205,29 @@ function updateCmtPops() {
     el2.textContent = c.text;
     el2.style.left = `${(v.x * 0.5 + 0.5) * r.width}px`;
     el2.style.top = `${(-v.y * 0.5 + 0.5) * r.height}px`;
+    // **十字にいちばん近いものを「指している」とする。** 消す相手を選ぶため。
+    const d = Math.hypot(v.x, v.y);
+    if (d < aimD) { aimD = d; aim = i; }
   });
+  if (aim >= 0) cmtPops[aim].classList.add('aim');
+  if (aim !== cmtAim) { cmtAim = aim; walkTip(); }
 }
 
 function hideCmtPops() {
-  for (const d of cmtPops) d.hidden = true;
+  for (const d of cmtPops) { d.hidden = true; d.classList.remove('aim'); }
+  if (cmtAim !== -1) { cmtAim = -1; walkTip(); }
+}
+
+/** 十字が指しているコメントを消す。 */
+function deleteAimedComment() {
+  if (cmtAim < 0 || cmtAim >= comments.length) return false;
+  const c = comments[cmtAim];
+  comments = comments.filter(v => v.id !== c.id);
+  cmtAim = -1;
+  hideCmtPops();
+  refreshComments();
+  setStatus(`コメントを消しました（残り ${comments.length} 件）`);
+  return true;
 }
 
 function enterWalk() {
@@ -1272,6 +1296,9 @@ window.addEventListener('keydown', e => {
   if (k) { walkKeys.add(k); e.preventDefault(); }
   else if (e.code === 'KeyC') { setCommenting(!commenting); e.preventDefault(); }
   else if (e.code === 'KeyV') { toggleCmtShow(); e.preventDefault(); }
+  else if (e.code === 'Delete' || e.code === 'Backspace') {
+    if (deleteAimedComment()) e.preventDefault();
+  }
   else if (e.key === 'Escape') exitWalk();
 });
 window.addEventListener('keyup', e => {
