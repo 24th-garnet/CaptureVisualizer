@@ -278,3 +278,49 @@ def test_walk_mode_does_not_hide_the_cursor():
     css = (webapp.WEB_ROOT / "style.css").read_text()
     block = css[css.index(".stage.walking"):][:160]
     assert "cursor: none" not in block, block
+
+
+def _css():
+    from mdr2colmap import webapp
+    return (webapp.WEB_ROOT / "style.css").read_text()
+
+
+def test_drawing_line_weights_follow_the_standard():
+    """線の太さはインテリア製図通則（表2）の符号化。
+
+    **見た目を整えるときに巻き込んで変えない。** 太線・中線・細線の比は 4:2:1
+    で、1/50 の図面では紙上 0.5 / 0.25 / 0.125mm にあたる。
+    """
+    import re
+    css = _css()
+    for name, w in (("--w-thick", 0.025), ("--w-mid", 0.0125), ("--w-thin", 0.00625)):
+        m = re.search(re.escape(name) + r":\s*([0-9.]+)", css)
+        assert m, name
+        assert float(m.group(1)) == w, (name, m.group(1))
+    # 比が 4:2:1 であること
+    assert 0.025 / 0.0125 == 2 and 0.0125 / 0.00625 == 2
+
+
+def test_drawing_symbols_keep_their_weights():
+    """記号ごとの線の太さ。壁は太線、窓と出入口の中央線は細線、方立は太線。"""
+    css = _css()
+    want = {
+        ".wall": "--w-thick",      # 壁の仕上線（断面の外形）
+        ".win": "--w-thin",        # 窓一般
+        ".jamb": "--w-thick",      # 出入口の方立
+        ".door-bar": "--w-thin",   # 出入口一般の中央線
+        ".dimline": "--w-thin",    # 寸法線
+    }
+    for sel, token in want.items():
+        i = css.index(sel + " ")
+        block = css[i:css.index("}", i)]
+        assert token in block, (sel, block)
+
+
+def test_the_plan_has_no_rounded_corners_or_shadows():
+    """図面そのものに飾りを足さない。**製図に角丸も影も無い。**"""
+    css = _css()
+    for sel in (".wall", ".win", ".jamb", ".obj rect", ".ghost"):
+        i = css.index(sel + " ")
+        block = css[i:css.index("}", i)]
+        assert "radius" not in block and "shadow" not in block, (sel, block)

@@ -6,6 +6,12 @@
   --shu: #b03a26; --window: #2f6d9e; --pick: #2f6d9e; --moved: #3d6b53;
   --jp: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* 余白と角と影。ここに集約して、個々の要素で数値を散らさない。 */
+  --r: 5px; --r-sm: 3px;
+  --sp: 8px;
+  --shadow: 0 1px 2px rgba(20, 18, 14, .05), 0 6px 18px rgba(20, 18, 14, .06);
+  --tint: color-mix(in srgb, var(--pick) 10%, transparent);
+  --hair: color-mix(in srgb, var(--rule) 45%, transparent);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -13,6 +19,7 @@
     --stage3d: #17191b;
     --ink: #e9e7e0; --soft: #a7aca3; --faint: #767c73; --rule: #5d6259;
     --shu: #e2725a; --window: #6fa8d4; --pick: #6fa8d4; --moved: #82bb96;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .35);
   }
 }
 * { box-sizing: border-box; }
@@ -20,15 +27,44 @@
    クラスで display を指定すると負ける。実際に入力欄が出しっぱなしになった。 */
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--ground); color: var(--ink);
-       font-family: var(--jp); line-height: 1.6; }
-button { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
-         border: 1px solid var(--rule); background: transparent;
-         padding: 5px 10px; cursor: pointer; border-radius: 2px; }
-button:hover:not(:disabled) { border-color: var(--soft); color: var(--ink); }
-button:disabled { opacity: .4; cursor: default; }
-button.primary { border-color: var(--pick); color: var(--pick); }
-label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
-        display: inline-flex; gap: 5px; align-items: center; }
+       font-family: var(--jp); line-height: 1.6;
+       -webkit-font-smoothing: antialiased; }
+/* 数字は等幅で揃える。文章は本文の書体に任せる。 */
+.num, td, .facts dd, .scan .meta, .tag, .root { font-variant-numeric: tabular-nums; }
+
+button { font: inherit; font-size: 12.5px; line-height: 1.2; color: var(--soft);
+         border: 1px solid var(--hair); background: var(--paper);
+         padding: 6px 11px; cursor: pointer; border-radius: var(--r-sm);
+         transition: border-color .12s, color .12s, background .12s; }
+button:hover:not(:disabled) { border-color: var(--rule); color: var(--ink); }
+button:active:not(:disabled) { background: var(--ground); }
+button:disabled { opacity: .35; cursor: default; }
+button.primary { border-color: var(--pick); color: var(--pick);
+                 background: var(--tint); }
+button.primary:hover:not(:disabled) { background:
+  color-mix(in srgb, var(--pick) 18%, transparent); color: var(--pick); }
+
+/* **切り替えは札にする。** 並べたときに状態が一目で分かり、場所も食わない。 */
+label { font-size: 12.5px; color: var(--soft);
+        display: inline-flex; gap: 6px; align-items: center; }
+.tools label, .bar label {
+  border: 1px solid var(--hair); border-radius: 999px; padding: 4px 10px 4px 8px;
+  cursor: pointer; user-select: none;
+  transition: border-color .12s, color .12s, background .12s; }
+.tools label:hover, .bar label:hover { border-color: var(--rule); color: var(--ink); }
+.tools label:has(:checked), .bar label:has(:checked) {
+  border-color: color-mix(in srgb, var(--pick) 55%, transparent);
+  background: var(--tint); color: var(--ink); }
+.tools input[type=checkbox], .bar input[type=checkbox] { accent-color: var(--pick); margin: 0; }
+
+input[type=text], input[type=number], input:not([type]), select {
+  font: inherit; font-size: 12.5px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--hair); border-radius: var(--r-sm); padding: 5px 8px; }
+select { cursor: pointer; }
+
+/* **焦点を必ず見せる。** キーボードだけで一周できることを保つ。 */
+:focus-visible { outline: 2px solid var(--pick); outline-offset: 2px;
+                 border-radius: var(--r-sm); }
 
 .app { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 100vh; }
 
@@ -36,18 +72,22 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .list { border-right: 1px solid var(--edge); background: var(--paper);
         display: flex; flex-direction: column; max-height: 100vh; }
 .list-head { display: flex; align-items: center; justify-content: space-between;
-             padding: 14px 16px; border-bottom: 1px solid var(--edge); }
-.list-head h1 { margin: 0; font-size: 15px; letter-spacing: .06em; }
+             padding: 16px; border-bottom: 1px solid var(--edge); }
+.list-head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .08em; }
 .scans { overflow-y: auto; flex: 1; }
-.scan { padding: 11px 16px; border-bottom: 1px solid var(--edge); cursor: pointer; }
+/* 選んだ行は、色だけでなく縦の罫でも示す。色の差だけだと見分けにくい。 */
+.scan { padding: 11px 16px 11px 13px; border-bottom: 1px solid var(--edge);
+        border-left: 3px solid transparent; cursor: pointer;
+        transition: background .12s, border-color .12s; }
 .scan:hover { background: color-mix(in srgb, var(--pick) 6%, transparent); }
-.scan.sel { background: color-mix(in srgb, var(--pick) 12%, transparent); }
+.scan.sel { background: var(--tint); border-left-color: var(--pick); }
 .scan .name { font-family: var(--mono); font-size: 12.5px; }
 .scan .meta { font-size: 11.5px; color: var(--faint); font-family: var(--mono);
               display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
 .scan .tags { display: flex; gap: 4px; margin-top: 4px; }
-.tag { font-family: var(--mono); font-size: 10px; padding: 1px 5px;
-       border: 1px solid currentColor; border-radius: 2px; color: var(--faint); }
+.tag { font-family: var(--mono); font-size: 10px; padding: 1.5px 6px;
+       border: 1px solid currentColor; border-radius: 999px; color: var(--faint);
+       opacity: .9; }
 .tag.room { color: var(--pick); }
 .tag.moved { color: var(--moved); }
 /* 置換した家具。**人の操作でしか起きない**ので、起きていることを示す。 */
@@ -60,21 +100,26 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .empty { color: var(--faint); font-size: 13px; padding: 16px; }
 
 /* 詳細 */
-.detail { padding: 18px 22px 40px; min-width: 0; }
+.detail { padding: 22px 26px 44px; min-width: 0; }
 .placeholder { color: var(--faint); padding: 60px 0; text-align: center; }
 .head { display: flex; justify-content: space-between; align-items: flex-start;
         gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
-.head h2 { margin: 0; font-size: 20px; font-family: var(--mono); }
+.head h2 { margin: 0; font-size: 19px; font-family: var(--mono); letter-spacing: .01em; }
 .sub { margin: 2px 0 0; color: var(--soft); font-size: 13px; }
 .badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .panes { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-         gap: 1px; background: var(--edge); border: 1px solid var(--edge); }
+         gap: 1px; background: var(--edge); border: 1px solid var(--edge);
+         border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow); }
 .pane { background: var(--paper); display: flex; flex-direction: column; min-width: 0; }
+/* 操作が増えたので折り返させる。詰め込んで 1 行に収めると読めなくなる。 */
 .pane-head { display: flex; justify-content: space-between; align-items: center;
-             padding: 8px 12px; border-bottom: 1px solid var(--edge);
-             font-size: 12px; font-family: var(--mono); color: var(--soft); }
-.pane-head .tools { display: flex; gap: 6px; }
+             gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--edge);
+             font-size: 11.5px; font-family: var(--mono); color: var(--faint);
+             letter-spacing: .06em; flex-wrap: wrap; }
+.pane-head .tools { display: flex; gap: 6px; flex-wrap: wrap;
+                    align-items: center; justify-content: flex-end; }
+.tools .sep { width: 1px; height: 16px; background: var(--edge); margin: 0 2px; }
 .stage { height: 420px; position: relative; touch-action: none; }
 .stage.view { background: var(--stage3d); }
 .stage svg, .stage canvas { display: block; width: 100%; height: 100%; }
@@ -94,34 +139,34 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 /* 近づいたコメント。離れたら消して点だけに戻す。 */
 .cmtpops { position: absolute; inset: 0; pointer-events: none; }
 .cmtpop { position: absolute; transform: translate(-50%, -140%);
-          max-width: 16em; padding: 5px 8px; border-radius: 3px;
-          background: var(--shu); color: var(--paper);
-          font-family: var(--jp); font-size: 12.5px; line-height: 1.4;
-          box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+          max-width: 16em; padding: 6px 9px; border-radius: var(--r);
+          background: var(--shu); color: #fff;
+          font-size: 12.5px; line-height: 1.45;
+          box-shadow: 0 2px 10px rgba(0,0,0,.28); }
 
 .cmtbox { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 20px);
           display: flex; gap: 6px; background: var(--paper);
-          border: 1px solid var(--rule); border-radius: 3px; padding: 8px;
-          box-shadow: 0 4px 16px rgba(0,0,0,.25); }
-.cmtbox input { width: 22em; font-family: var(--jp); font-size: 13px;
-                color: var(--ink); background: transparent;
-                border: 1px solid var(--edge); border-radius: 2px; padding: 5px 7px; }
+          border: 1px solid var(--hair); border-radius: var(--r); padding: 9px;
+          box-shadow: var(--shadow); }
+.cmtbox input { width: 22em; font-size: 13px; }
 /* 3D のコメント。平面図にも同じ番号で出す。 */
 .cmt circle { fill: var(--shu); fill-opacity: .9; }
 .cmt text { font-family: var(--mono); font-size: .11px; fill: var(--paper);
             text-anchor: middle; dominant-baseline: middle; user-select: none; }
 .cmtlist { margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; }
-.cmtlist li { display: flex; gap: 8px; align-items: baseline;
-              padding: 5px 0; border-bottom: 1px solid var(--edge); }
+.cmtlist li { display: flex; gap: 10px; align-items: baseline;
+              padding: 7px 0; border-bottom: 1px solid var(--edge); }
 .cmtlist .n { font-family: var(--mono); font-size: 11px; color: var(--shu);
               min-width: 1.6em; }
 .cmtlist .x { margin-left: auto; cursor: pointer; color: var(--faint);
               font-family: var(--mono); font-size: 11px; }
 .cmtlist .x:hover { color: var(--shu); }
 
-.walkhud p { position: absolute; left: 0; right: 0; bottom: 10px; margin: 0;
-             text-align: center; font-family: var(--mono); font-size: 11.5px;
-             color: var(--faint); }
+.walkhud p { position: absolute; left: 50%; bottom: 12px; margin: 0;
+             transform: translateX(-50%);
+             padding: 5px 12px; border-radius: 999px;
+             background: rgba(0, 0, 0, .42); color: #eceae4;
+             font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em; }
 /* 平面図に出す立ち位置。図面の記号ではないので編集のつまみと同じ扱い。 */
 .walkmark circle { fill: var(--moved); fill-opacity: .9; }
 .walkmark path { fill: none; stroke: var(--moved); stroke-width: 0.02; }
@@ -192,37 +237,34 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .editbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
            padding: 7px 12px; border-bottom: 1px solid var(--edge); }
 .editbar .spacer { flex: 1; }
-.editbar input { width: 5.5em; font-family: var(--mono); font-size: 12.5px;
-                 color: var(--ink); background: transparent; padding: 3px 5px;
-                 border: 1px solid var(--rule); border-radius: 2px;
+.editbar input { width: 5.5em; font-family: var(--mono);
                  font-variant-numeric: tabular-nums; }
 .wallhit.sel { stroke: color-mix(in srgb, var(--pick) 35%, transparent); }
 .addtip { font-family: var(--mono); font-size: .16px; fill: var(--pick); }
 .edited-mark { font-family: var(--mono); font-size: 12px; color: var(--moved); }
 
-.bar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
-       padding: 12px 0 4px; }
+.bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+       padding: 14px 0 4px; }
 .bar .spacer { flex: 1; }
-.bar .sep { width: 1px; height: 18px; background: var(--edge); }
-.bar select { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
-              background: transparent; border: 1px solid var(--rule);
-              border-radius: 2px; padding: 4px 6px; max-width: 14em; }
+.bar .sep { width: 1px; height: 18px; background: var(--edge); margin: 0 2px; }
+.bar select { max-width: 14em; }
 .muted { color: var(--faint); font-family: var(--mono); font-size: 12px; }
 .status { font-family: var(--mono); font-size: 12px; color: var(--soft);
-          min-height: 1.4em; margin: 4px 0 12px; }
+          min-height: 1.4em; margin: 6px 0 14px; }
 .status.err { color: var(--shu); }
 
 .cols { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
         gap: 24px; align-items: start; }
-h3 { margin: 0 0 8px; font-size: 15px; }
+h3 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--faint);
+     letter-spacing: .04em; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--edge); text-align: right; }
 th:first-child, td:first-child { text-align: left; }
-thead th { font-size: 11px; color: var(--faint); font-weight: 500;
-           border-bottom: 1px solid var(--rule); }
+thead th { font-size: 10.5px; color: var(--faint); font-weight: 500;
+           letter-spacing: .06em; border-bottom: 1px solid var(--rule); }
 td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 td.name { font-family: var(--jp); cursor: pointer; }
-tr.sel td { background: color-mix(in srgb, var(--pick) 10%, transparent); }
+tr.sel td { background: var(--tint); }
 tr.low td.name::after { content: " low"; font-family: var(--mono);
                         font-size: 10px; color: var(--shu); }
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
