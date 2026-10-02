@@ -785,6 +785,20 @@ ok('外周を塞ぐ面は片面', made[4 + w0i].m.o.side === THREE.FrontSide);
 ok('床は片面', made[2].m.o.side === THREE.FrontSide);
 origWalls.forEach(function (o) { o.twoSided = false; });
 
+// **実際に部屋の中へ壁を足したとき。** 裏から覗いて消えてはいけない。
+fillMaps = { floor: { w: 4, h: 4, data: 'AAAA' }, ceiling: { w: 4, h: 4, data: 'AAAA' } };
+plan.walls.forEach(function (w) { fillMaps[w.id] = { w: 4, h: 4, data: 'AAAA' }; });
+fillTex = new Map();
+addWall([0.6, 0.6], [2.6, 2.6]);             // 部屋の中を斜めに仕切る
+var kid = shell.children[shell.children.length - 1];
+ok('足した壁は両面で出る', kid.material.o.side === THREE.DoubleSide,
+   plan.walls[plan.walls.length - 1].id);
+ok('足した壁は無機的な絵のまま',
+   kid.material.o.map && kid.material.o.map.canvas);
+ok('外周の壁は片面のまま', shell.children[4].material.o.side === THREE.FrontSide);
+restore(0); reindex();
+fillMaps = {}; fillTex = new Map();
+
 // 格子がまったく無ければ一色で逃がす
 made = []; fillMaps = {}; fillTex = new Map(); buildShell();
 ok('格子が無ければ一色', made[2].m.o.map === null && near(made[2].m.o.color.r, 0.56));
