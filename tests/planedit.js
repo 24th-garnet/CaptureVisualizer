@@ -963,18 +963,17 @@ setCommenting(false);
 ok('戻すと案内も戻る', els['walktip'].textContent.indexOf('W A S D') >= 0);
 ok('十字も戻る', els['walkhud'].classList.contains('commenting') === false);
 
-// **V でコメントの出し方を一巡する。**
-cmtShow = 'near';
-ok('既定は近くだけ', cmtShow === 'near');
-ok('案内に状態が出る', els['walktip'].textContent.indexOf('近くだけ') >= 0,
+// **V で表示と非表示を切り替える。**
+cmtVisible = true;
+walkTip();
+ok('既定は表示', cmtVisible === true);
+ok('案内に状態が出る', els['walktip'].textContent.indexOf('表示') >= 0,
    els['walktip'].textContent);
-cycleCmtShow();
-ok('1 回で すべて', cmtShow === 'all');
-ok('案内も変わる', els['walktip'].textContent.indexOf('すべて') >= 0);
-cycleCmtShow();
-ok('2 回で 消す', cmtShow === 'off');
-cycleCmtShow();
-ok('3 回で 近くだけ に戻る', cmtShow === 'near');
+toggleCmtShow();
+ok('1 回で消す', cmtVisible === false);
+ok('案内も変わる', els['walktip'].textContent.indexOf('消す') >= 0);
+toggleCmtShow();
+ok('もう 1 回で表示に戻る', cmtVisible === true);
 
 // 入力の受け渡し。**ポインタの固定を外さないと文字が打てない。**
 var unlocked = 0, relocked = 0;
@@ -1031,22 +1030,20 @@ walkPos = { x: 0, y: 0, z: 0 };
 comments = [{ id: 'a', p: [0, WALK_EYE, 1.0], text: '近い', at: '' },
             { id: 'b', p: [0, WALK_EYE, 9.0], text: '遠い', at: '' }];
 cmtPops = [];
-cmtShow = 'near';
+cmtVisible = true;
 updateCmtPops();
 ok('件数ぶんの枠を作る', cmtPops.length === 2, 'n=' + cmtPops.length);
 ok('近いものは出る', cmtPops[0].hidden === false && cmtPops[0].textContent === '近い');
 ok('遠いものは出ない（点だけに戻す）', cmtPops[1].hidden === true);
 
 // 一括の表示・非表示
-cmtShow = 'all';
+cmtVisible = false;
 updateCmtPops();
-ok('「すべて」なら遠いものも出る', cmtPops[1].hidden === false);
-cmtShow = 'off';
+ok('「消す」なら何も出ない', cmtPops.every(function (d) { return d.hidden; }));
+cmtVisible = true;
 updateCmtPops();
-ok('「消す」なら何も出ない',
-   cmtPops.every(function (d) { return d.hidden; }));
-cmtShow = 'near';
-updateCmtPops();
+ok('戻せば近いものだけ出る',
+   cmtPops[0].hidden === false && cmtPops[1].hidden === true);
 ok('距離の境目は CMT_POP_DIST', CMT_POP_DIST > 1.0 && CMT_POP_DIST < 9.0);
 ok('画面の位置が入る', cmtPops[0].style.left === '400px', cmtPops[0].style.left);
 
