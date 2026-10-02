@@ -1291,6 +1291,18 @@ function fitInBox(size, o) {
           o.d / Math.max(size[2], 1e-6)];
 }
 
+/** 置換した家具の向き（three.js の rotation.y, ラジアン）。
+
+    **`yaw` の符号を反転する。** 平面図の `yaw` は (x, z) 平面で +x から +z へ
+    測るが、three.js の `Ry(θ)` は +x を (cosθ, −sinθ) へ送るので向きが逆に
+    なる。実測で、箱の隅（サーバが出す `box.pts`）と比べて +yaw では最大
+    0.326m ずれ、−yaw でぴったり合った。
+
+    人の回転 `dyaw` はスキャンのメッシュと同じ向き（そちらは `+dyaw`）。 */
+function replaceYaw(o, m) {
+  return (-(o.yaw || 0) + (m.dyaw || 0)) * Math.PI / 180;
+}
+
 /** 置換を 3D へ反映する。
 
     箱と同じ大きさにし、底に置いて中心を揃える。倍率は `fitInBox`。 */
@@ -1394,7 +1406,7 @@ function place() {
     if (rp && m3) {
       // 置換も家具と同じだけ動かす。向きは箱の向き＋人の回転。
       rp.position.set(m3.c[0] + m.dx, m3.y0 || 0, m3.c[2] + m.dz);
-      rp.rotation.y = (o.yaw + m.dyaw) * Math.PI / 180;
+      rp.rotation.y = replaceYaw(o, m);
     }
     const bx = boxes.get(o.id);
     if (bx && m3) {

@@ -841,6 +841,44 @@ ok('縦横比の違うアセットでも箱と同じ', (function () {
 })());
 ok('0 で割らない', fitInBox([0, 0, 0], box).every(isFinite));
 
+// **向きは箱の隅と合わなければならない。**
+// 平面図の yaw は (x,z) で +x から +z へ測る。three.js の Ry(θ) は +x を
+// (cosθ, −sinθ) へ送るので符号が逆になる。
+function footprint(o, m) {
+  var t = replaceYaw(o, m), out = [];
+  [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (s) {
+    var lx = s[0] * o.w / 2, lz = s[1] * o.d / 2;
+    out.push([lx * Math.cos(t) + lz * Math.sin(t), -lx * Math.sin(t) + lz * Math.cos(t)]);
+  });
+  return out;
+}
+function planCorners(o) {                 // webgeom が box.pts を出すのと同じ式
+  var th = o.yaw * Math.PI / 180;
+  var u = [Math.cos(th), Math.sin(th)], v = [-Math.sin(th), Math.cos(th)], out = [];
+  [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (s) {
+    out.push([u[0] * s[0] * o.w / 2 + v[0] * s[1] * o.d / 2,
+              u[1] * s[0] * o.w / 2 + v[1] * s[1] * o.d / 2]);
+  });
+  return out;
+}
+var ob = { w: 0.663, d: 0.721, h: 1.328, yaw: 153.07 };
+ok('向きが箱の隅と合う', (function () {
+  var a = footprint(ob, {}), b = planCorners(ob), e = 0;
+  for (var i = 0; i < 4; i++)
+    e = Math.max(e, Math.abs(a[i][0] - b[i][0]), Math.abs(a[i][1] - b[i][1]));
+  return e < 1e-9;
+})(), JSON.stringify([footprint(ob, {})[0], planCorners(ob)[0]]));
+ok('yaw の符号が逆だと合わない', (function () {
+  var t = ob.yaw * Math.PI / 180;         // わざと反転しない
+  var lx = -ob.w / 2, lz = -ob.d / 2;
+  var x = lx * Math.cos(t) + lz * Math.sin(t);
+  return Math.abs(x - planCorners(ob)[0][0]) > 0.1;
+})());
+ok('人の回転はスキャンと同じ向き',
+   near(replaceYaw({ yaw: 0 }, { dyaw: 90 }), Math.PI / 2, 1e-9));
+ok('yaw と dyaw が足し合わさる',
+   near(replaceYaw({ yaw: 30 }, { dyaw: 30 }), 0, 1e-9));
+
 // 操作列。家具を選んでいるときだけ使える。
 assetList = [{ key: 'table', label: 'table', faces: 928, size: [55, 36, 30] },
              { key: 'chair', label: 'chair', faces: 2500, size: [1, 1, 1] }];
