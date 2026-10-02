@@ -395,3 +395,38 @@ def test_fill_map_fills_empty_cells():
 def test_fill_map_needs_enough_samples():
     assert webgeom._grid_map(np.zeros((2, 2)), np.zeros((2, 3)), 8, 8) is None
     assert webgeom._grid_map(np.zeros((0, 2)), np.zeros((0, 3)), 8, 8) is None
+
+
+def _room_with_partition(step=0.1):
+    """6×3m の部屋を真ん中で仕切った形。間仕切りは両側に床がある。"""
+    V, F, C = [], [], []
+    n6, n3, h = int(6 / step), int(3 / step), int(2.4 / step)
+    _grid([0, 0, 0.0], [6, 0, 0], [0, 2.4, 0], n6, h, 1, V, F, C)   # z=0
+    _grid([0, 0, 3.0], [6, 0, 0], [0, 2.4, 0], n6, h, 1, V, F, C)   # z=3
+    _grid([0.0, 0, 0], [0, 0, 3], [0, 2.4, 0], n3, h, 1, V, F, C)   # x=0
+    _grid([6.0, 0, 0], [0, 0, 3], [0, 2.4, 0], n3, h, 1, V, F, C)   # x=6
+    _grid([3.0, 0, 0], [0, 0, 3], [0, 2.4, 0], n3, h, 1, V, F, C)   # x=3 の間仕切り
+    _grid([0, 0, 0], [6, 0, 0], [0, 0, 3], n6, n3, 2, V, F, C)      # 床（全面）
+    return np.array(V, float), np.array(F), np.array(C, np.uint8)
+
+
+PART_WALLS = [("w0", [0.0, 0.0], [6.0, 0.0]), ("w1", [6.0, 0.0], [6.0, 3.0]),
+              ("w2", [6.0, 3.0], [0.0, 3.0]), ("w3", [0.0, 3.0], [0.0, 0.0]),
+              ("w4", [3.0, 0.0], [3.0, 3.0])]
+
+
+def test_a_partition_has_floor_on_both_sides():
+    """部屋の中の壁は両側に床がある。裏から覗いて消えてはいけない。"""
+    V, F, cls = _room_with_partition()
+    two = webgeom.wall_two_sided(V, F, cls, PART_WALLS)
+    assert two == [False, False, False, False, True], two
+
+
+def test_outer_walls_are_one_sided():
+    V, F, cls = _box_room()
+    assert webgeom.wall_two_sided(V, F, cls, WALLS) == [False] * 4
+
+
+def test_two_sided_needs_classification():
+    V, F, _ = _box_room()
+    assert webgeom.wall_two_sided(V, F, None, WALLS) == [False] * 4

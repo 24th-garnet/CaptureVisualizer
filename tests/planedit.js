@@ -761,6 +761,30 @@ ok('絵は元の端から新しい端まで', (function () {
 })(), JSON.stringify(xrange(withPh[0])));
 restore(0); reindex();
 
+// --- 部屋の中の壁は裏からも見える -------------------------------------------
+restore(0); reindex();
+cullBack = true;
+origWalls = plan.walls.map(function (w) {
+  var f = frameOf(w.a, w.b); f.id = w.id; f.inSide = 1; f.twoSided = false; return f;
+});
+ok('外周の壁は片面', sideOf('w0') === THREE.FrontSide);
+ok('部屋そのものは片面', sideOf(null) === THREE.FrontSide);
+origWalls.find(function (o) { return o.id === 'w1'; }).twoSided = true;
+ok('間仕切りは両面', sideOf('w1') === THREE.DoubleSide);
+ok('足した壁は両面（スキャンに無い）', sideOf('w9') === THREE.DoubleSide);
+cullBack = false;
+ok('「裏面を透過」を切れば全部両面', sideOf('w0') === THREE.DoubleSide);
+cullBack = true;
+
+// 塞ぐ面にも効く
+made = []; buildShell();
+var w1i = plan.walls.findIndex(function (w) { return w.id === 'w1'; });
+ok('間仕切りを塞ぐ面も両面', made[4 + w1i].m.o.side === THREE.DoubleSide);
+var w0i = plan.walls.findIndex(function (w) { return w.id === 'w0'; });
+ok('外周を塞ぐ面は片面', made[4 + w0i].m.o.side === THREE.FrontSide);
+ok('床は片面', made[2].m.o.side === THREE.FrontSide);
+origWalls.forEach(function (o) { o.twoSided = false; });
+
 // 格子がまったく無ければ一色で逃がす
 made = []; fillMaps = {}; fillTex = new Map(); buildShell();
 ok('格子が無ければ一色', made[2].m.o.map === null && near(made[2].m.o.color.r, 0.56));

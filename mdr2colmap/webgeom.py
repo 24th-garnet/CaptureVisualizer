@@ -30,7 +30,7 @@ from . import meshplan, roomplan, segment
 from .mesh import Mesh
 
 #: ブラウザへ渡す形の版。増やすとキャッシュが作り直される。
-PAYLOAD_VER = 9
+PAYLOAD_VER = 10
 #: 間引き後の面数の上限。ブラウザへ送る量を決める。
 FACE_BUDGET = 170_000
 #: テクスチャ付きのときの上限。**形は UV を運べれば足りる**——細かさは
@@ -150,6 +150,14 @@ def atlas_bytes(path: str | Path) -> tuple[bytes, str] | None:
 #: この明るさ以下を「撮れていない」とみなす（0-255）。アトラスの未着色は
 #: 真っ黒で書かれる。暗いだけの本物を巻き込まないよう低めに取る。
 ATLAS_EMPTY = 6
+#: 壁の両側に床があるかを見る帯（m）。壁の際は壁自身の足元が入るので外す。
+TWO_SIDED_NEAR = 0.15
+TWO_SIDED_FAR = 1.2
+#: 壁の端から外す長さ（m）。角では隣の部屋の床が回り込む。
+WALL_END_MARGIN = 0.1
+#: 両側と認めるのに要る面の数と、少ない側／多い側の比。
+TWO_SIDED_MIN = 50
+TWO_SIDED_RATIO = 0.2
 #: 隙間を塞ぐ面の色を持つ格子の大きさ（m）。細かくすると撮り残しの形まで
 #: 写してしまい、塞いだ面が斑になる。
 SHELL_CELL = 0.05
@@ -419,6 +427,39 @@ def wall_sides(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
     return out
 
 
+def wall_two_sided(Vl: np.ndarray, F: np.ndarray, cls: np.ndarray | None,
+                   walls: list) -> list[bool]:
+    """壁の両側に床があるか。**あれば部屋の中の壁（間仕切り）。**
+
+    外周の壁は片側にしか床が無いので、裏面を落としても困らない。間仕切りは
+    両側から見えるので、裏から覗いたときに消えてはいけない。
+
+    巻き方向にも平面図の形にも頼らず、床の面がどちらにあるかで決める。
+    """
+    out = [False] * len(walls)
+    if cls is None:
+        return out
+    floor = cls == 2
+    if floor.sum() < 50:
+        return out
+    cen = Vl[F][:, :, [0, 2]].mean(axis=1)[floor]
+    for k, (_, a, b) in enumerate(walls):
+        a = np.asarray(a, float)
+        d = np.asarray(b, float) - a
+        L = max(float(np.linalg.norm(d)), 1e-6)
+        u = d / L
+        n = np.array([-u[1], u[0]])
+        q = cen - a
+        s, dd = q @ u, q @ n
+        band = (s > WALL_END_MARGIN) & (s < L - WALL_END_MARGIN) \
+            & (np.abs(dd) > TWO_SIDED_NEAR) & (np.abs(dd) < TWO_SIDED_FAR)
+        pos = int((band & (dd > 0)).sum())
+        neg = int((band & (dd < 0)).sum())
+        lo, hi = min(pos, neg), max(pos, neg)
+        out[k] = lo >= TWO_SIDED_MIN and lo >= hi * TWO_SIDED_RATIO
+    return out
+
+
 def _grid_map(uv: np.ndarray, col: np.ndarray, w: int, h: int):
     """点の色を格子に落とし、空いた升目を周りから埋める。
 
@@ -673,9 +714,10 @@ def build(bundle: str | Path, face_budget: int | None = None) -> dict:
                 origin=[round(x0, 4), round(z0, 4)],
                 floorY=round(float(floor_y), 4),
                 sourceFaces=int(len(F)), roomCell=cell,
-                walls=[dict(id=i, a=a, b=b, inSide=sd)
-                       for (i, a, b), sd in zip(wall_lines,
-                                                wall_sides(Vl, F, cls, wall_lines))],
+                walls=[dict(id=i, a=a, b=b, inSide=sd, twoSided=bool(ts))
+                       for (i, a, b), sd, ts in zip(
+                           wall_lines, wall_sides(Vl, F, cls, wall_lines),
+                           wall_two_sided(Vl, F, cls, wall_lines))],
                 hasClass=cls is not None,
                 textured=UV is not None,
                 fillMaps=surface_maps(Vl, C, F, cls, wall_lines, owner,

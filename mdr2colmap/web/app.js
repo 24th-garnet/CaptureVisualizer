@@ -610,8 +610,8 @@ async function loadGeom(id) {
   }
   wallParts = [];
   allParts = [];
-  origWalls = (g.walls || []).map(w =>
-    Object.assign(frameOf(w.a, w.b), { id: w.id, inSide: w.inSide || 1 }));
+  origWalls = (g.walls || []).map(w => Object.assign(frameOf(w.a, w.b),
+    { id: w.id, inSide: w.inSide || 1, twoSided: !!w.twoSided }));
   for (const part of g.parts) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(dec(part.pos, Float32Array), 3));
@@ -627,8 +627,7 @@ async function loadGeom(id) {
     // 外から見ると手前の壁が消えて中が見える。両面で描くと箱の外側しか
     // 見えず、間取りの確認に使えない。
     if (part.uv) geo.setAttribute('uv', new THREE.BufferAttribute(dec(part.uv, Float32Array), 2));
-    const mat = new THREE.MeshLambertMaterial({
-      side: cullBack ? THREE.FrontSide : THREE.DoubleSide });
+    const mat = new THREE.MeshLambertMaterial({ side: sideOf(part.wall || null) });
     applySkin(mat, !!part.uv);
     const mesh = new THREE.Mesh(geo, mat);
     materials.push(mat);
@@ -1069,6 +1068,21 @@ function applySkin(mat, hasUV) {
 
     床と天井は平面図の外形いっぱいの矩形で足りる。壁の外へはみ出すぶんは、
     同時に起こす壁の面が室内から隠す。凹んだ形の部屋でも三角形分割が要らない。 */
+/** 面の表裏。
+
+    **部屋の中にある壁は、裏から覗いても見えなければならない。** 外周の壁は
+    片側にしか床が無いので裏面を落として構わない（そうしないと外から見たとき
+    手前の壁で中が隠れる）が、間仕切りは両側から見るものなので落とすと消える。
+
+    間仕切りかどうかはサーバで測る（壁の両側に床の面があるか）。人が足した壁は
+    スキャンに無く、部屋の中に引くものなので無条件に両面。 */
+function sideOf(wallId) {
+  if (!cullBack) return THREE.DoubleSide;
+  if (!wallId) return THREE.FrontSide;
+  const o = origWalls.find(w => w.id === wallId);
+  return (!o || o.twoSided) ? THREE.DoubleSide : THREE.FrontSide;
+}
+
 /** 編集で生まれた空間に出す絵。
 
     **撮れていない場所と、編集で生まれた場所は別物。** 前者は「そこに床は
@@ -1125,7 +1139,7 @@ function buildShell() {
   const H = Math.max(...plan.walls.map(w => w.height || 0), 2.4);
   const g = new THREE.Group();
 
-  const quad = (pts, uvs, nrm, key) => {
+  const quad = (pts, uvs, nrm, key, wallId) => {
     const e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
     const e2 = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
     const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
@@ -1146,7 +1160,7 @@ function buildShell() {
     if (map === false) map = null;
     g.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
       map, color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(0.56, 0.55, 0.52),
-      side: cullBack ? THREE.FrontSide : THREE.DoubleSide })));
+      side: sideOf(wallId) })));
   };
 
   const M = 0.5;                                   // 壁の外へ少し出す
@@ -1189,7 +1203,7 @@ function buildShell() {
       const vTop = key === PLACEHOLDER ? hh / PLACEHOLDER_TILE : vt;
       quad([[pa[0], 0, pa[1]], [pb[0], 0, pb[1]],
             [pb[0], hh, pb[1]], [pa[0], hh, pa[1]]],
-           [[u0, 0], [u1, 0], [u1, vTop], [u0, vTop]], nrm, key);
+           [[u0, 0], [u1, 0], [u1, vTop], [u0, vTop]], nrm, key, w.id);
     };
     // **引き伸ばしたところは絵にする。** 色の格子はスキャン当時の壁の長さぶん
     // しか無い。伸びたぶんへ引き伸ばすと、元からあったように見えてしまう。
@@ -1479,9 +1493,10 @@ document.getElementById('resetAll').onclick = () => {
 };
 document.getElementById('cull').onchange = e => {
   cullBack = e.target.checked;
-  for (const m of materials) {
-    m.side = cullBack ? THREE.FrontSide : THREE.DoubleSide;
-    m.needsUpdate = true;
+  for (const p of allParts) {
+    if (!p.mesh) continue;
+    p.mesh.material.side = sideOf(p.wallId);   // 間仕切りは切っても両面のまま
+    p.mesh.material.needsUpdate = true;
   }
   buildShell();
   draw();
