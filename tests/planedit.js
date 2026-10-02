@@ -2,7 +2,7 @@
 // ブラウザが無い環境でも、壁を動かしたときの開口の挙動を押さえておきたい。
 function Node(tag) {
   this.tag = tag; this.attrs = {}; this.kids = []; this._text = ''; this.dataset = {};
-  this.value = ''; this.hidden = false;
+  this.value = ''; this.hidden = false; this.style = {};
   this.focus = function () { this.focused = true; };
   var cls = {};
   this.classList = {
@@ -28,6 +28,12 @@ Node.prototype.querySelectorAll = function(){ return []; };
 var captured = null;
 Node.prototype.setPointerCapture = function(){ captured = this; };
 Node.prototype.releasePointerCapture = function(){ captured = null; };
+Node.prototype.getBoundingClientRect = function(){
+  return { width: 800, height: 600, left: 0, top: 0 };
+};
+Node.prototype.removeChild = function (n) {
+  this.kids = this.kids.filter(function (k) { return k !== n; });
+};
 Node.prototype.createSVGPoint = function(){
   return { x: 0, y: 0, matrixTransform: function(m){ return m.apply(this); } };
 };
@@ -56,6 +62,7 @@ var getComputedStyle = function(){ return { getPropertyValue: function(){ return
 var fetch = function(){ return { then: function(){ return { then: function(){} }; } }; };
 var THREE = undefined, ResizeObserver = function(){ this.observe = function(){}; };
 var requestAnimationFrame = function(){};
+var setTimeout = function(){ return 0; };
 var localStorage = { getItem: function(){ return null; }, setItem: function(){} };
 var atob = function(){ return ''; };
 var confirm = function(){ return true; };
@@ -987,5 +994,44 @@ marks = 0;
   n.kids.forEach(count);
 })(els['plan']);
 ok('無ければ出ない', marks === 0);
+
+// --- 近づくと吹き出しが出る -------------------------------------------------
+THREE = {
+  Vector3: function () {
+    this.set = function (x, y, z) { this.x = x; this.y = y; this.z = z; return this; };
+    this.project = function () { this.x = 0; this.y = 0; this.z = 0.5; return this; };
+  }
+};
+_cmtV = null;
+walkCam = {};
+walkPos = { x: 0, y: 0, z: 0 };
+comments = [{ id: 'a', p: [0, WALK_EYE, 1.0], text: '近い', at: '' },
+            { id: 'b', p: [0, WALK_EYE, 9.0], text: '遠い', at: '' }];
+cmtPops = [];
+updateCmtPops();
+ok('件数ぶんの枠を作る', cmtPops.length === 2, 'n=' + cmtPops.length);
+ok('近いものは出る', cmtPops[0].hidden === false && cmtPops[0].textContent === '近い');
+ok('遠いものは出ない（点だけに戻す）', cmtPops[1].hidden === true);
+ok('距離の境目は CMT_POP_DIST', CMT_POP_DIST > 1.0 && CMT_POP_DIST < 9.0);
+ok('画面の位置が入る', cmtPops[0].style.left === '400px', cmtPops[0].style.left);
+
+// 後ろにあるものは出さない（投影は背後でも値を返す）
+THREE.Vector3 = function () {
+  this.set = function (x, y, z) { this.x = x; this.y = y; this.z = z; return this; };
+  this.project = function () { this.x = 0; this.y = 0; this.z = 1.4; return this; };
+};
+_cmtV = null;
+updateCmtPops();
+ok('後ろのものは出さない', cmtPops[0].hidden === true);
+
+// 件数が減れば枠も減らす
+comments = [comments[0]];
+updateCmtPops();
+ok('件数が減れば枠も減る', cmtPops.length === 1, 'n=' + cmtPops.length);
+
+hideCmtPops();
+ok('まとめて消せる', cmtPops.every(function (d) { return d.hidden; }));
+comments = []; cmtPops = []; walkCam = null; THREE = undefined; _cmtV = null;
+drawPlan();
 
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

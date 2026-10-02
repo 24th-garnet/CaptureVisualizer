@@ -510,6 +510,10 @@ let commenting = false;      // コメントモード
 let comments = [];           // [{id, p:[x,y,z], text, at}]
 let cmtPending = null;       // 置く場所が決まり、文を待っている
 let cmtRoot = null;          // 3D の印
+let cmtPops = [];            // 近づいたとき出す吹き出し（DOM）
+//: 吹き出しを出す距離（m）。これより離れたら点だけに戻す。
+const CMT_POP_DIST = 2.5;
+let _cmtV = null;            // 投影の作業用。毎フレーム作らない
 /* 光線はコメントのときだけ使う（歩く当たり判定は平面図に移した）。
    **module 直下で作らない。** three.js が読めないときに app.js 全体が死ぬ。 */
 let _walkRay = null;
@@ -722,6 +726,7 @@ function loop() {
     const dt = Math.min(0.05, (now - walkLast) / 1000);
     walkLast = now;
     walkStep(dt);
+    updateCmtPops();
     renderer.render(scene, walkCam);
   } else if (needs && renderer && target) {
     needs = false;
@@ -1140,7 +1145,53 @@ function askComment(p) {
 function closeComment() {
   cmtPending = null;
   document.getElementById('cmtbox').hidden = true;
-  if (walking && canvas.requestPointerLock) canvas.requestPointerLock();
+  if (!walking) return;
+  if (canvas.requestPointerLock) canvas.requestPointerLock();
+  // **固定が戻らないことがある。** 外した直後の再要求は ブラウザに断られる
+  // （短い待ちを置く実装がある）。戻らなければ案内を出し直す。
+  setTimeout(() => {
+    if (walking && document.pointerLockElement !== canvas) {
+      document.getElementById('walkstart').hidden = false;
+    }
+  }, 200);
+}
+
+/** 近くのコメントを吹き出しで出す。離れたら消す。
+
+    画面に投影して DOM を重ねる。three.js の板で出すより字が読める。 */
+function updateCmtPops() {
+  const box = document.getElementById('cmtpops');
+  if (!box || !walkCam) return;
+  if (!_cmtV) _cmtV = new THREE.Vector3();
+  const r = canvas.getBoundingClientRect();
+  while (cmtPops.length < comments.length) {
+    const d = document.createElement('div');
+    d.className = 'cmtpop';
+    box.appendChild(d);
+    cmtPops.push(d);
+  }
+  while (cmtPops.length > comments.length) box.removeChild(cmtPops.pop());
+  comments.forEach((c, i) => {
+    const el2 = cmtPops[i];
+    const dist = Math.hypot(c.p[0] - walkPos.x, c.p[1] - (walkPos.y + WALK_EYE),
+                            c.p[2] - walkPos.z);
+    if (dist > CMT_POP_DIST) { el2.hidden = true; return; }
+    _cmtV.set(c.p[0], c.p[1], c.p[2]).project(walkCam);
+    const v = _cmtV;
+    // **後ろにあるものは出さない。** 投影は背後でも値を返す。
+    if (v.z > 1 || v.x < -1 || v.x > 1 || v.y < -1 || v.y > 1) {
+      el2.hidden = true;
+      return;
+    }
+    el2.hidden = false;
+    el2.textContent = c.text;
+    el2.style.left = `${(v.x * 0.5 + 0.5) * r.width}px`;
+    el2.style.top = `${(-v.y * 0.5 + 0.5) * r.height}px`;
+  });
+}
+
+function hideCmtPops() {
+  for (const d of cmtPops) d.hidden = true;
 }
 
 function enterWalk() {
@@ -1157,7 +1208,10 @@ function enterWalk() {
   document.getElementById('walk').textContent = '戻る';
   resizeGL();
   drawPlan();                               // 立ち位置の印を出す
-  canvas.requestPointerLock && canvas.requestPointerLock();
+  // **ここでは固定しない。** 3D の上を押させてから固定することで、外したとき
+  // にカーソルが 3D の上へ戻る（固定した場所へ戻るため）。「歩く」ボタンの
+  // 上で固定すると、コメントを書くときにカーソルが枠の外に現れる。
+  document.getElementById('walkstart').hidden = false;
 }
 
 function exitWalk() {
@@ -1168,6 +1222,8 @@ function exitWalk() {
   walkKeys.clear();
   document.getElementById('stage3d').classList.remove('walking');
   document.getElementById('walkhud').hidden = true;
+  document.getElementById('walkstart').hidden = true;
+  hideCmtPops();
   document.getElementById('walk').textContent = '歩く';
   if (document.pointerLockElement === canvas) document.exitPointerLock();
   resizeGL();
@@ -1176,9 +1232,18 @@ function exitWalk() {
 }
 
 document.addEventListener('pointerlockchange', () => {
+  if (!walking) return;
+  if (document.pointerLockElement === canvas) {
+    document.getElementById('walkstart').hidden = true;
+    return;
+  }
+  if (cmtPending) return;                    // 文を書いている間は外れていてよい
   // Esc で外れたら歩くのをやめる。掴んだままにすると操作不能になる。
-  if (walking && document.pointerLockElement !== canvas) exitWalk();
+  exitWalk();
 });
+document.getElementById('walkstart').onclick = () => {
+  if (walking && canvas.requestPointerLock) canvas.requestPointerLock();
+};
 document.addEventListener('mousemove', e => {
   if (!walking || document.pointerLockElement !== canvas) return;
   walkYaw -= e.movementX * 0.0022;
