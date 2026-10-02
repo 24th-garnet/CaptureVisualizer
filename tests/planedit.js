@@ -857,4 +857,29 @@ ok('選択中のアセットが出る', els['replaceWith'].value === 'table');
 sel = null; replaceMap = {}; assetList = [];
 syncReplaceUI();
 
+// **置換は人の操作でしか起きない。** 置換した家具は平面図でも分かる。
+replaceMap = {};
+drawPlan();
+var objN = objNodes.get(plan.objects[0].id);
+ok('置換していなければ印は付かない',
+   (objN.attrs['class'] || '').indexOf('swap') < 0, objN.attrs['class']);
+replaceMap[plan.objects[0].id] = 'table';
+drawPlan();
+objN = objNodes.get(plan.objects[0].id);
+ok('置換した家具には印が付く',
+   (objN.attrs['class'] || '').indexOf('swap') >= 0, objN.attrs['class']);
+ok('寸法のかわりにアセット名が出る', (function () {
+  var lab = null;
+  (function walk(n) {
+    if ((n.attrs['class'] || '') === 'size') lab = n;
+    n.kids.forEach(walk);
+  })(objN);
+  return lab && lab.textContent.indexOf('table') >= 0;
+})());
+// 戻せば印も消える
+replaceMap = {};
+drawPlan();
+ok('戻せば印は消える',
+   (objNodes.get(plan.objects[0].id).attrs['class'] || '').indexOf('swap') < 0);
+
 print(fails ? ('\n' + fails + ' FAIL') : '\nALL PASS');

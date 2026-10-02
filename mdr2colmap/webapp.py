@@ -93,6 +93,8 @@ def summary(bundle: Path) -> dict:
     s["hasClass"] = (bundle / "mesh_class.bin").exists()
     s["hasMoves"] = (bundle / "moves.json").exists()
     s["edited"] = (bundle / EDIT_FILE).exists()
+    # 置換は人の操作でしか起きないので、起きていることが一覧で見えるようにする。
+    s["replaced"] = len(_read_json(bundle / REPLACE_FILE) or {})
     s["hasArranged"] = (bundle / "arranged.ply").exists()
     return s
 

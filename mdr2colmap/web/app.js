@@ -56,6 +56,7 @@ async function loadList() {
     const tags = [];
     if (s.hasRoom) tags.push('<span class="tag room">RoomPlan</span>');
     if (s.hasMoves) tags.push('<span class="tag moved">配置あり</span>');
+    if (s.replaced) tags.push(`<span class="tag swap">置換 ${s.replaced}</span>`);
     if (s.unfilled > 0.15) tags.push(`<span class="tag warn">未撮影 ${Math.round(s.unfilled * 100)}%</span>`);
     if (!s.hasVertexColor) tags.push('<span class="tag warn">3D なし</span>');
     d.innerHTML = `<div class="name">${s.name}</div>`
@@ -361,14 +362,16 @@ function drawPlan() {
     const [gx, gy] = toScreen(o.c);
     el('rect', { class: 'ghost', x: -o.w / 2, y: -o.d / 2, width: o.w, height: o.d,
                  transform: `translate(${gx} ${gy}) rotate(${o.yaw - 90})` }, ghosts);
-    const g = el('g', { class: 'obj', 'data-id': o.id }, objs);
+    const g = el('g', { class: replaceMap[o.id] ? 'obj swap' : 'obj',
+                        'data-id': o.id }, objs);
     el('rect', { x: -o.w / 2, y: -o.d / 2, width: o.w, height: o.d }, g);
     // **家具は形状だけでなく名称と寸法を併記する**（解説 9）。寸法は W×D×H。
     // 家具が回っても文字は水平に保つので、ラベルは別の g に入れて逆回転させる。
     const lab = el('g', { class: 'lab' }, g);
     el('text', { x: 0, y: -0.06 }, lab).textContent = o.label;
     el('text', { x: 0, y: 0.09, class: 'size' }, lab).textContent =
-      `${mmv(o.w)}×${mmv(o.d)}×${mmv(o.h)}`;
+      replaceMap[o.id] ? `置換: ${replaceMap[o.id]}`
+                       : `${mmv(o.w)}×${mmv(o.d)}×${mmv(o.h)}`;
     objNodes.set(o.id, g);
   }
   // 室名。平面図は床上おおむね 1m の水平断面図で、室名を入れるのが通例。
@@ -759,7 +762,7 @@ function pushBox(b, tri, seg) {
     図面が変われば必ず drawPlan を通るので、そこに繋げておけば編集が漏れない
     （家具の位置を place に預けて呼び忘れたのと同じ轍を踏まない）。 */
 function updateOverlay() {
-  if (overlay) {
+  if (overlay && scene) {
     scene.remove(overlay);
     overlay.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     overlay = null;
@@ -1142,7 +1145,7 @@ function fillTexture(key) {
 }
 
 function buildShell() {
-  if (shell) {
+  if (shell && scene) {
     scene.remove(shell);
     shell.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     shell = null;
@@ -1588,7 +1591,9 @@ document.getElementById('replaceDo').onclick = async () => {
   else { setStatus('置き換えるアセットを選んでください', true); return; }
   await saveReplace();
   await applyReplacements();
+  drawPlan();
   syncReplaceUI();
+  loadList();
   setStatus(replaceMap[sel] ? '置き換えました' : '元のスキャンに戻しました');
 };
 document.getElementById('replaceWith').onchange = () => {

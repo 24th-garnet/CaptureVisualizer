@@ -235,3 +235,14 @@ def test_asset_list_ignores_other_files(tmp_path):
     (tmp_path / "broken.glb").write_bytes(b"nope")
     assert webapp.asset_list(tmp_path) == []
     assert webapp.asset_list(tmp_path / "missing") == []
+
+
+def test_summary_reports_replacement_count(tmp_path):
+    """置換は人の操作でしか起きない。起きていることが一覧で見える。"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-y.mdr"
+    b.mkdir()
+    (b / "manifest.json").write_text("{}")
+    assert webapp.summary(b)["replaced"] == 0
+    (b / webapp.REPLACE_FILE).write_text('{"a": "t", "b": "t"}')
+    assert webapp.summary(b)["replaced"] == 2
