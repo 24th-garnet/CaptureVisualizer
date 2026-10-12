@@ -216,18 +216,65 @@ _ROOM = {
 }
 
 
-def test_replacement_is_not_persisted(tmp_path):
-    """置換はその場限り。**スキャンにも、別ファイルにも残さない。**
+def test_the_proposal_never_touches_what_was_measured(tmp_path):
+    """置換とコメントは**提案の層**に書く。測ったものには触らない。
 
-    残すと、次に開いた人が測ったものと置き換えたものを見分けられない。
+    かつては「その場限り。保存しない」としていた。理由は「次に開いた人が測った
+    ものと置き換えたものを見分けられない」こと。**別のファイルに分ければ、その
+    理由のほうが満たせる**ので、残す側に倒した。room.json は最後まで無傷。
     """
     from mdr2colmap import webapp
     b = tmp_path / "room-x.mdr"
     b.mkdir()
     (b / "manifest.json").write_text("{}")
-    assert not hasattr(webapp, "REPLACE_FILE")
-    assert "replaced" not in webapp.summary(b)
-    assert sorted(p.name for p in b.iterdir()) == ["manifest.json"]
+    (b / "room.json").write_text('{"walls": []}')
+    before = (b / "room.json").read_bytes()
+
+    webapp.save_proposal(b, {"replace": {"o1": "chair"},
+                             "comments": [{"id": 1, "text": "ここ"}]})
+
+    assert (b / "room.json").read_bytes() == before, "測ったものを書き換えた"
+    assert sorted(q.name for q in b.iterdir()) == [
+        "manifest.json", "proposal.json", "room.json"]
+
+
+def test_the_proposal_comes_back(tmp_path):
+    from mdr2colmap import webapp
+    b = tmp_path / "room-x.mdr"
+    b.mkdir()
+    webapp.save_proposal(b, {"replace": {"o1": "chair"}, "comments": []})
+    got = webapp.proposal(b)
+    assert got["replace"] == {"o1": "chair"}
+
+
+def test_an_empty_proposal_leaves_no_file(tmp_path):
+    """空の提案はファイルごと消す。**空のファイルを残さない。**"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-x.mdr"
+    b.mkdir()
+    webapp.save_proposal(b, {"replace": {"o1": "chair"}, "comments": []})
+    assert (b / webapp.PROPOSAL_FILE).exists()
+    webapp.save_proposal(b, {"replace": {}, "comments": []})
+    assert not (b / webapp.PROPOSAL_FILE).exists()
+
+
+def test_resetting_the_proposal_keeps_the_scan(tmp_path):
+    from mdr2colmap import webapp
+    b = tmp_path / "room-x.mdr"
+    b.mkdir()
+    (b / "room.json").write_text('{"walls": []}')
+    webapp.save_proposal(b, {"replace": {"o1": "chair"}, "comments": []})
+    assert webapp.reset_proposal(b)["reverted"] is True
+    assert sorted(q.name for q in b.iterdir()) == ["room.json"]
+
+
+def test_a_broken_proposal_does_not_break_the_scan(tmp_path):
+    """壊れた提案は空として読む。**開けなくなるより良い。**"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-x.mdr"
+    b.mkdir()
+    (b / webapp.PROPOSAL_FILE).write_text("{壊れている")
+    assert webapp.proposal(b) == {"replace": {}, "comments": []}
 
 
 def test_asset_list_ignores_other_files(tmp_path):
@@ -238,20 +285,31 @@ def test_asset_list_ignores_other_files(tmp_path):
     assert webapp.asset_list(tmp_path / "missing") == []
 
 
-def test_comments_are_not_persisted(tmp_path):
-    """コメントもその場限り。置換と同じ扱い。
+def test_comments_live_in_the_proposal_too(tmp_path):
+    """コメントも提案の層。置換と同じ扱いで、同じファイルに入る。
 
-    スキャンにも別ファイルにも残さない。残すと、次に開いた人が測ったものと
-    書き加えたものを見分けられない。
+    **ファイルを増やさない。** 置換とコメントはどちらも「測ったものではない」
+    という一点で同じなので、分ける理由が無い。
     """
     from mdr2colmap import webapp
     b = tmp_path / "room-c.mdr"
     b.mkdir()
     (b / "manifest.json").write_text("{}")
     assert not hasattr(webapp, "COMMENT_FILE")
-    assert not hasattr(webapp, "save_comments")
+    webapp.save_proposal(b, {"replace": {}, "comments": [{"id": 1, "text": "あ"}]})
+    assert sorted(q.name for q in b.iterdir()) == ["manifest.json", "proposal.json"]
+    assert webapp.proposal(b)["comments"][0]["text"] == "あ"
+
+
+def test_the_summary_does_not_leak_the_proposal(tmp_path):
+    """一覧は測ったものの諸元。**提案を混ぜない。**"""
+    from mdr2colmap import webapp
+    b = tmp_path / "room-c.mdr"
+    b.mkdir()
+    (b / "manifest.json").write_text("{}")
+    webapp.save_proposal(b, {"replace": {"o1": "chair"}, "comments": []})
+    assert "replaced" not in webapp.summary(b)
     assert "comments" not in webapp.summary(b)
-    assert sorted(q.name for q in b.iterdir()) == ["manifest.json"]
 
 
 def test_hidden_attribute_is_not_overridden_by_display():

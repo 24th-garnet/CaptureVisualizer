@@ -94,8 +94,10 @@ async function select(id) {
   if (plan.error) { setStatus(plan.error, true); return; }
   showPlanSource();
   state = new Map((plan.objects || []).map(o => [o.id, { dx: 0, dz: 0, dyaw: 0 }]));
-  comments = [];                   // その場限り。スキャンを選び直せば消える
-  replaceMap = {};                 // その場限り。スキャンを選び直せば戻る
+  // 提案の層（置換とコメント）は、このあと loadProposal() が読み直す
+  comments = [];
+  replaceMap = {};
+  proposalDirty = false;
   for (const [, n] of replaceNodes) if (scene) scene.remove(n);
   replaceNodes = new Map();
   const saved = await api(`/api/scans/${id}/moves`);
@@ -115,6 +117,7 @@ async function select(id) {
   updateEditButtons();
   showEditBar();
   loadGeom(id);
+  loadProposal();
 }
 
 /** 図面の出どころ。編集済みなら実測ではないことを明示する。 */
@@ -546,6 +549,7 @@ let placeholder = null;      // 編集で生まれた空間に出す無機的な
 let assetList = [];          // 使えるアセット
 let assetCache = new Map();  // key -> 読み込んだ部品（使い回す）
 let replaceMap = {};         // 家具 id -> アセット key
+let proposalDirty = false;   // 保存していない提案があるか
 let replaceNodes = new Map(); // 家具 id -> 置いた 3D
 const PLACEHOLDER = '\u0000placeholder';
 const PLACEHOLDER_TILE = 0.25;   // 絵の 1 升が何メートルか
@@ -578,7 +582,10 @@ function initGL() {
     document.getElementById('gl-note').textContent = 'three.js を読み込めません（オフライン）';
     return;
   }
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // **描いた絵を取り出せるようにする。** 既定では描画直後に捨てられるので、
+  // あとから toDataURL を呼んでも空の画像しか返らない
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true,
+                                       preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(50, 1, 0.05, 300);
@@ -1107,6 +1114,7 @@ function listComments() {
     x.textContent = '削除';
     x.onclick = () => {
       comments = comments.filter(v => v.id !== c.id);
+      proposalChanged();
       refreshComments();
     };
     li.append(n, t, x);
@@ -1859,6 +1867,7 @@ document.getElementById('replaceDo').onclick = async () => {
   await applyReplacements();
   drawPlan();
   syncReplaceUI();
+  proposalChanged();
   setStatus(replaceMap[sel] ? '置き換えました' : '元のスキャンに戻しました');
 };
 document.getElementById('replaceWith').onchange = () => {
@@ -1908,6 +1917,7 @@ document.getElementById('cmtbox').addEventListener('submit', e => {
   const p = cmtPending;
   closeComment();
   if (!t || !p) return;
+  proposalChanged();
   comments.push({ id: `c${Date.now().toString(36)}${comments.length}`,
                   p, text: t, at: new Date().toISOString() });
   refreshComments();
@@ -1954,6 +1964,83 @@ document.getElementById('dxf').onclick = () => {
   if (planDirty) setStatus('保存していない変更は DXF に入りません', true);
   location.href = `/api/scans/${current}/dxf`;
 };
+// --- 提案の層（置換とコメント）---------------------------------------------
+//
+// **測ったものには書かない。** room.json は測ったもの、proposal.json は提案したもの。
+// 同じファイルに混ぜると、次に開いた人が見分けられない。
+
+async function loadProposal() {
+  const got = await api(`/api/scans/${current}/proposal`);
+  if (!got || got.error) return;
+  replaceMap = Object.assign({}, got.replace || {});
+  comments = (got.comments || []).map((c) => Object.assign({}, c));
+  proposalDirty = false;
+  if (Object.keys(replaceMap).length) applyReplacements();
+  drawPlan();
+  updateProposalButtons();
+}
+
+function updateProposalButtons() {
+  const n = Object.keys(replaceMap).length + comments.length;
+  const btn = document.getElementById('saveProposal');
+  if (btn) {
+    btn.disabled = !current || (!proposalDirty && n === 0);
+    btn.textContent = proposalDirty ? '提案を保存 *' : '提案を保存';
+  }
+  const reset = document.getElementById('resetProposal');
+  if (reset) reset.disabled = !current || n === 0;
+}
+
+const proposalChanged = () => { proposalDirty = true; updateProposalButtons(); };
+
+const saveProposalBtn = document.getElementById('saveProposal');
+if (saveProposalBtn) saveProposalBtn.onclick = async () => {
+  setStatus('提案を保存しています…');
+  const res = await api(`/api/scans/${current}/proposal`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replace: replaceMap, comments }) });
+  if (res.ok) {
+    proposalDirty = false;
+    updateProposalButtons();
+    setStatus(`提案を保存しました（置換 ${res.replaced} / コメント ${res.comments}）`);
+  } else setStatus(res.error || '保存できませんでした', true);
+};
+
+const resetProposalBtn = document.getElementById('resetProposal');
+if (resetProposalBtn) resetProposalBtn.onclick = async () => {
+  if (!confirm('置換とコメントを捨てます。測ったものは残ります。')) return;
+  const res = await api(`/api/scans/${current}/proposal-reset`, { method: 'POST' });
+  if (res.ok) {
+    for (const [, n] of replaceNodes) if (scene) scene.remove(n);
+    replaceNodes = new Map();
+    replaceMap = {};
+    comments = [];
+    proposalDirty = false;
+    applyReplacements();
+    drawPlan();
+    drawComments();
+    updateProposalButtons();
+    setStatus('提案を捨てました');
+  } else setStatus(res.error || '戻せませんでした', true);
+};
+
+// --- 画像の書き出し ---------------------------------------------------------
+
+const shotBtn = document.getElementById('shot');
+if (shotBtn) shotBtn.onclick = () => {
+  if (!renderer || !current) return;
+  // **取り出す直前に 1 枚描く。** loop は needs が立ったときしか描かないので、
+  // そのまま読むと前の絵か空の絵が返る
+  needs = true;
+  loop();
+  const url = canvas.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${current.replace('.mdr', '')}.png`;
+  a.click();
+  setStatus('3D の見え方を画像にしました');
+};
+
 document.getElementById('savePlan').onclick = async () => {
   setStatus('図面を保存しています…');
   const doc = Object.assign({}, plan);

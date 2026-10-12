@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from . import assets, dxf, meshplan, roomplan, segment, webgeom
+from . import assets, dxf, measures, meshplan, roomplan, segment, webgeom
 from .mesh import Mesh, read_ply_mesh
 
 WEB_ROOT = Path(__file__).parent / "web"
@@ -48,6 +48,13 @@ COOKIE = "madoriba_token"
 WALL_THICKNESS = 0.12
 #: 人が編集した平面図。room.json は書き換えず、全体をここに持つ。
 EDIT_FILE = "plan_edit.json"
+
+#: 提案（家具の置換とコメント）。**測ったものとは別のファイルに置く。**
+#:
+#: `room.json` は測ったもの、`proposal.json` は提案したもの。同じファイルに混ぜると
+#: 次に開いた人が見分けられない——かつて「保存しない」と決めたのはそれが理由で、
+#: **別レイヤにすれば理由のほうが満たせる**。元データは最後まで無傷。
+PROPOSAL_FILE = "proposal.json"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -211,6 +218,20 @@ def _plan_from_mesh(mesh: Mesh) -> dict:
                 floorSeen=round(p.floor_seen, 2), ceilingSeen=round(p.ceiling_seen, 2))
 
 
+def measures_payload(bundle: Path) -> dict:
+    """実測 JSON。**編集後の壁で出す。**
+
+    入口を `plan_payload` にするのは `_dxf` と同じで、画面で見たものがそのまま
+    出ないと受け渡しの意味が無いため。スキャン直後が欲しければ `derive_plan`。
+    """
+    return measures.build(plan_payload(bundle), plan_id=bundle.stem)
+
+
+def elevations_payload(bundle: Path) -> dict:
+    """壁ごとの立面。**編集後の壁で出す。**"""
+    return {"walls": measures.elevations(plan_payload(bundle))}
+
+
 # --- 3D（重いのでキャッシュする）-------------------------------------------
 
 
@@ -268,6 +289,41 @@ def save_plan(bundle: Path, doc: dict) -> dict:
     doc.pop("edited", None)
     (bundle / EDIT_FILE).write_text(json.dumps(doc, ensure_ascii=False, indent=1))
     return {"ok": True}
+
+
+def proposal(bundle: Path) -> dict:
+    """提案の層。無ければ空。"""
+    f = bundle / PROPOSAL_FILE
+    if not f.exists():
+        return {"replace": {}, "comments": []}
+    try:
+        doc = json.loads(f.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"replace": {}, "comments": []}
+    return {"replace": dict(doc.get("replace") or {}),
+            "comments": list(doc.get("comments") or [])}
+
+
+def save_proposal(bundle: Path, doc: dict) -> dict:
+    """提案を書く。**room.json にも plan_edit.json にも触らない。**"""
+    out = {"replace": dict(doc.get("replace") or {}),
+           "comments": list(doc.get("comments") or [])}
+    if not out["replace"] and not out["comments"]:
+        # 空の提案はファイルごと消す。**空のファイルを残さない**
+        return reset_proposal(bundle)
+    (bundle / PROPOSAL_FILE).write_text(
+        json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"ok": True, "replaced": len(out["replace"]),
+            "comments": len(out["comments"])}
+
+
+def reset_proposal(bundle: Path) -> dict:
+    """提案を捨てる。消すだけで、測ったものは無傷。"""
+    f = bundle / PROPOSAL_FILE
+    existed = f.exists()
+    if existed:
+        f.unlink()
+    return {"ok": True, "reverted": existed}
 
 
 def reset_plan(bundle: Path) -> dict:
@@ -476,6 +532,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(summary(bundle))
                 if what == "plan":
                     return self._json(plan_payload(bundle))
+                if what == "proposal":
+                    return self._json(proposal(bundle))
+                if what == "measures":
+                    return self._json(measures_payload(bundle))
+                if what == "elevations":
+                    return self._json(elevations_payload(bundle))
                 if what == "plan-origin":
                     return self._json(derive_plan(bundle))
                 if what == "geom":
@@ -522,6 +584,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(save_plan(bundle, body))
                 if what == "plan-reset":
                     return self._json(reset_plan(bundle))
+                if what == "proposal":
+                    return self._json(save_proposal(bundle, body))
+                if what == "proposal-reset":
+                    return self._json(reset_proposal(bundle))
                 if what == "arrange":
                     return self._json(apply_moves(bundle, body))
             self._json({"error": "そんな道は無い"}, 404)

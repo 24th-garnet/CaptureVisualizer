@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import coords, floorplan, roomplan, segment, texture, verify
+from . import coords, floorplan, measures, roomplan, segment, texture, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -86,6 +86,29 @@ def cmd_verify(args: argparse.Namespace) -> int:
     print("  2. transform が camera->world である前提と、列優先の読み取り")
     print("  3. 深度側 intrinsics のスケール（spec/mdr-v1.md の対応式）")
     return 1
+
+
+def cmd_measures(a: argparse.Namespace) -> int:
+    """実測 JSON を書き出す。**Web を立てずにバッチで回せるように。**
+
+    編集済みの図面があればそれを使う。画面で見たものがそのまま出る、という
+    Web 側の約束を CLI でも守る。
+    """
+    from . import webapp
+    doc = webapp.measures_payload(a.bundle)
+    a.output.parent.mkdir(parents=True, exist_ok=True)
+    a.output.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    room = doc["rooms"][0]
+    print(f"{a.output} へ書き出した")
+    print(f"  床 {room['floor_area']} m2 / 周長 {room['perimeter']} mm / "
+          f"壁 {room['wall_area']} m2 / 開口 {len(room['openings'])}")
+    weak = [(k, v) for k, v in {**doc["basis"], **room["basis"]}.items()
+            if v != "実測"]
+    if weak:
+        print(f"  仮定に頼っている点 {len(weak)} 件: "
+              + ", ".join(f"{k}={v}" for k, v in weak))
+    return 0
 
 
 def cmd_floorplan(args: argparse.Namespace) -> int:
@@ -346,6 +369,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # room.json を持たない旧データ用。寸法は 3cm 以内で一致するが
     # 開口部（ドア・窓）は検出できない（閉まっていると壁と区別がつかない）。
+    ms = sub.add_parser("measures", help="数量拾いへ渡す実測 JSON を書き出す")
+    ms.add_argument("bundle", type=Path)
+    ms.add_argument("-o", "--output", type=Path, default=Path("measures.json"))
+    ms.set_defaults(func=cmd_measures)
+
     fp = sub.add_parser("floorplan", help="メッシュから間取りを抽出する（旧データ用）")
     fp.add_argument("bundle", help=".mdr ディレクトリ")
     fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
