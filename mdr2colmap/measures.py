@@ -50,8 +50,7 @@ def build(plan: dict, moves: dict | None = None, *,
 
     openings = [o for w in walls for o in (w.get("openings") or [])]
     perimeter = sum(_wall_length(w) for w in walls)
-    net = sum(_net_length(w) for w in walls)
-    wall_area = net * height_m
+    wall_area = perimeter * height_m
 
     area_source = str(plan.get("areaSource") or "")
     mesh = plan.get("source") == "mesh"
